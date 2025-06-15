@@ -1,0 +1,44 @@
+
+HTML <head> Tag: a container for metadata and is placed between the <html> tag and the <body> tag.
+HTML <meta> Tag: defines metadata about an HTML document
+HTML <title> Tag: defines the title of the HTML document
+HTML <link> Tag: often used to link to external style sheets 
+HTML <script> Tag: used to embed a JavaScript or points to an external script file
+HTML <style> Tag: used to define style information (CSS) for a document
+HTML <body> Tag: contains all the contents of an HTML document, such as headings, paragraphs, images, hyperlinks, tables, lists, etc.
+HTML <p> Tag: defines a paragraph
+HTML <h1> Tags: used to define HTML headings
+HTML <br> Tag: inserts a single line break.
+HTML <div> Tag: used as a container for HTML elements
+HTML <a> Tag: defines a hyperlink
+HTML <img> Tag: used to embed an image in an HTML page
+HTML <nav> Tag: defines a set of navigation links
+HTML <ul> Tag: defines an unordered (bulleted) list
+HTML <li> Tag: defines a list item
+HTML <input> Tag: specifies an input field where the user can enter data
+HTML <iframe> Tag: specifies an inline frame.
+HTML class Attribute: used to specify a class for an HTML element.
+HTML id Attribute: specifies a unique id for an HTML element
+
+
+CSS selectors (*, element, .class or #id) are used to "find" (or select) the HTML elements you want to style.
+CSS box-sizing Property: defines how the width and height of an element are calculated: should they include padding and borders, or not
+CSS color Property: set the color of text
+CSS background-color Property: specifies the background color of an element
+CSS list-style-type Property: specifies the type of list-item marker in a list
+CSS align-content Property: specifies the alignment between the lines inside a flexible container
+CSS align-items Property: specifies the alignment for items inside a flexible container
+CSS border Property: A shorthand property for border-width, border-style and border-color
+CSS display Property: specifies how a certain HTML element should be displayed
+CSS flex-wrap Property: specifies whether the flexible items should wrap or not
+CSS font-size Property: specifies the font size of text
+CSS font-weight Property: specifies the weight of a font
+CSS width Property: sets the width of an element
+CSS height Property: sets the height of an element
+CSS max-width Property: sets the maximum width of an element
+CSS max-height Property: sets the maximum height of an element
+CSS justify-content Property: specifies the alignment between the items inside a flexible container when the items do not use all available space
+CSS text-align Property: specifies the horizontal alignment of text
+CSS margin Property: sets all the margin properties in one declaration
+CSS padding Property: shorthand property for all the padding-* properties
+CSS　@media Property: sets the style rules for different media types/devices/sizes

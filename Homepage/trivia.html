@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trivia!</title>
+    <style>
+        h1 {
+            color: white;
+            background-color: blue;
+            text-align: center;
+            padding: 50px;
+        }
+
+        ul {
+            display: flex;
+            padding-left: 10px;
+        }
+
+        li {
+            list-style-type: none;
+            background-color:lightsteelblue;
+            margin: 10px;
+            padding: 10px;
+        }
+    </style>
+    <script>
+        var idx = 0;
+        var last_btn;
+        var last_bgcolor;
+
+        function part1_answer(event) {
+            let btn = event.target;
+            let isFirst = "True";
+            let isQ3 = false;
+
+            if (idx > 0) {
+                last_btn.style.background = last_bgcolor;
+            }
+
+            last_btn = btn;
+            last_bgcolor = last_btn.style.background;
+
+            if (btn.innerHTML == "July") isQ3 = true;
+            if (btn.innerHTML == "August") isQ3 = true;
+            if (btn.innerHTML == "September") isQ3 = true;
+
+            if (isQ3 == true) {
+                btn.style.background = "blue";
+                document.getElementById("part1_status").innerHTML = "Correct!";
+            }
+            else {
+                btn.style.background = "red";
+                document.getElementById("part1_status").innerHTML = "Incorrect";
+            }
+
+            // document.getElementById("part1_status").innerHTML = btn.innerHTML + isFirst + idx;
+            isFirst = "False"
+            idx++;
+        }
+
+        function part2_answer(event) {
+            let btn2 = event.target;
+            let text2 = document.getElementById("part2_text");
+
+            if (text2.value == "Seoul") {
+                text2.style.color = "white";
+                text2.style.background = "blue";
+                document.getElementById("part2_status").innerHTML = "Correct!";
+            } else {
+                text2.style.color = "yellow";
+                text2.style.background = "red";
+                document.getElementById("part2_status").innerHTML = "Incorrect";
+            }
+        }
+
+        function page_reload() {
+            location.reload();
+        }
+</script>
+</head>
+<body>
+    <h1>Trival!</h1>
+
+    <h2> Part 1: Multiple Choice</h3>
+    <hr>
+    <h3> Which of the following months is the third quarter of the year?</h3>
+
+    <div>
+        <button onclick="part1_answer(event)">March</button>
+        <button onclick="part1_answer(event)">July</button>
+        <button onclick="part1_answer(event)">September</button>
+        <button onclick="part1_answer(event)">October</button>
+    </div>
+
+    <p id="part1_status">&nbsp</p>
+
+    <h2> Part 2: Free Response</h3>
+    <hr>
+    <h3> Which city is the capital of South Korea?</h3>
+    <!-- Answer: 首爾 Seoul -->
+
+    <div>
+        <input type="text" id="part2_text" name="fname">
+        <button onclick="part2_answer(event)">Check Answer</button>
+    </div>
+
+    <p id="part2_status">&nbsp</p>
+
+    <button onclick="page_reload()">Reload page</button>
+
+    <p><a href="index.html"><br>Back to Home</a></p>
+
+</body>
+</html>
