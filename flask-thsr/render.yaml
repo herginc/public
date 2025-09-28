@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: flask-thsr-app
+    runtime: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "gunicorn app:app"
+    envVars:
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false
+
+# 重要的 key（API Token、DB 密碼、JWT secret 等） → 放在 Render Dashboard Environment
+# 非敏感參數（PORT、DEBUG flag） → 可以寫在 render.yaml
