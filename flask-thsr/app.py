@@ -68,6 +68,7 @@ def cb_echo():
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
     print(f"({count}) Body={body}")
+    sys.stdout.flush()
     return 'OK', 200
 
 
@@ -82,6 +83,7 @@ def line_webhook():
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
     print(f"Request body: {body}")
+    sys.stdout.flush()
 
     # handle webhook body
     try:
