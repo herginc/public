@@ -46,18 +46,35 @@ if channel_access_token is None:
 handler = WebhookHandler(channel_secret)
 configuration = Configuration(access_token=channel_access_token)
 
+count = 0
+
+@app.errorhandler(404)
+def page_not_found(error):
+    count = count + 1
+    print(f"[{error}] page not found or undefined route")
+    return 'page not found', 404
+
+
+@app.route("/", methods=["GET"])
+def home():
+    count = count + 1
+    return "LINE Bot Webhook is running ..."
+
+
 @app.route("/echo", methods=['POST'])
 def cb_echo():
+    count = count + 1
     # get request body as text
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
-    print(f"body={body}")
-    return 'OK'
+    print(f"({count}) Body={body}")
+    return 'OK', 200
 
 
 @app.route("/callback", methods=['POST'])
-def callback():
-    print("receive a POST messages to callback route")
+def line_webhook():
+    print("receive a POST messages via a callback route")
+
     # get X-Line-Signature header value
     signature = request.headers['X-Line-Signature']
 
@@ -72,7 +89,7 @@ def callback():
     except InvalidSignatureError:
         abort(400)
 
-    return 'OK'
+    return 'OK', 200
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -92,7 +109,7 @@ if __name__ == "__main__":
         usage='Usage: python ' + __file__ + ' [--port <port>] [--help]'
     )
     arg_parser.add_argument('-p', '--port', default=10000, help='port')
-    arg_parser.add_argument('-d', '--debug', default=False, help='debug')
+    arg_parser.add_argument('-d', '--debug', default=True, help='debug')
     options = arg_parser.parse_args()
 
     app.run(debug=options.debug, port=options.port)
