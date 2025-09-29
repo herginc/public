@@ -50,6 +50,7 @@ count = 0
 
 @app.errorhandler(404)
 def page_not_found(error):
+    global count
     count = count + 1
     print(f"[{error}] page not found or undefined route")
     return 'page not found', 404
@@ -57,12 +58,14 @@ def page_not_found(error):
 
 @app.route("/", methods=["GET"])
 def home():
+    global count
     count = count + 1
     return "LINE Bot Webhook is running ..."
 
 
 @app.route("/echo", methods=['POST'])
 def cb_echo():
+    global count
     count = count + 1
     # get request body as text
     body = request.get_data(as_text=True)
