@@ -6,7 +6,9 @@ import os
 import sys
 from argparse import ArgumentParser
 
-from flask import Flask, request, abort
+from flask import Flask, request, abort, render_template, jsonify, redirect, url_for
+import json
+from datetime import datetime
 
 from linebot.v3 import (
      WebhookHandler
@@ -52,9 +54,9 @@ def page_not_found(error):
     return 'page not found', 404
 
 
-@app.route("/", methods=["GET"])
-def home():
-    return "LINE Bot Webhook is running ..."
+# @app.route("/", methods=["GET"])
+# def home():
+#     return "LINE Bot Webhook is running ..."
 
 
 @app.route("/echo", methods=['POST'])
@@ -99,6 +101,89 @@ def message_text(event):
                 messages=[TextMessage(text=event.message.text)]
             )
         )
+
+
+TICKET_REQUEST_FILE = "ticket_requests.json"
+TICKET_HISTORY_FILE = "ticket_history.json"
+
+def load_json(filename):
+    if not os.path.exists(filename):
+        return []
+    with open(filename, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_json(filename, data):
+    with open(filename, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def get_new_id():
+    requests = load_json(TICKET_REQUEST_FILE)
+    if not requests:
+        return 1
+    return max(r["id"] for r in requests) + 1
+
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "POST":
+        # Receive new ticket request
+        data = request.form
+        ticket = {
+            "id": get_new_id(),
+            "status": "訂票待處理",
+            "order_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "name": data.get("name"),
+            "id_number": data.get("id_number"),
+            "train_no": data.get("train_no"),
+            "travel_date": data.get("travel_date"),
+            "from_station": data.get("from_station"),
+            "from_time": data.get("from_time"),
+            "to_station": data.get("to_station"),
+            "to_time": data.get("to_time"),
+        }
+        requests = load_json(TICKET_REQUEST_FILE)
+        requests.append(ticket)
+        save_json(TICKET_REQUEST_FILE, requests)
+        return redirect(url_for("index"))
+    # Show current ticket requests
+    requests = load_json(TICKET_REQUEST_FILE)
+    return render_template("index.html", requests=requests)
+
+@app.route("/history.html")
+def history():
+    history = load_json(TICKET_HISTORY_FILE)
+    return render_template("history.html", history=history)
+
+@app.route("/api/ticket_requests", methods=["GET"])
+def api_ticket_requests():
+    # For external system polling
+    requests = load_json(TICKET_REQUEST_FILE)
+    pending = [r for r in requests if r["status"] == "訂票待處理"]
+    return jsonify(pending)
+
+@app.route("/api/update_ticket_status", methods=["POST"])
+def api_update_ticket_status():
+    # External system updates ticket status
+    data = request.json
+    ticket_id = data.get("id")
+    new_status = data.get("status")
+    code = data.get("code", "")
+    requests = load_json(TICKET_REQUEST_FILE)
+    updated = False
+    for r in requests:
+        if r["id"] == ticket_id:
+            r["status"] = new_status
+            if code:
+                r["code"] = code
+            updated = True
+            # If booking is successful, move to history
+            if new_status == "訂位代號" and code:
+                history = load_json(TICKET_HISTORY_FILE)
+                r_copy = r.copy()
+                r_copy["code"] = code
+                history.append(r_copy)
+                save_json(TICKET_HISTORY_FILE, history)
+    save_json(TICKET_REQUEST_FILE, requests)
+    return jsonify({"success": updated})
 
 
 if __name__ == "__main__":

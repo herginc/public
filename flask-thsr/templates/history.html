@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>歷史訂票資訊</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+            font-family: "Noto Sans TC", Arial, sans-serif;
+            background: #f7f7fa;
+            margin: 0;
+            padding: 0;
+        }
+        header {
+            background: #1565c0;
+            color: #fff;
+            padding: 1.5rem 0;
+            text-align: center;
+            letter-spacing: 0.1em;
+            font-size: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 2px 8px #ccc;
+        }
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: #fff;
+            border-radius: 10px;
+            box-shadow: 0 2px 12px #ddd;
+            padding: 2rem 2.5rem 2.5rem 2.5rem;
+        }
+        h2 {
+            color: #1565c0;
+            margin-top: 0;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1.5rem;
+            background: #fafbfc;
+            font-size: 1rem;
+        }
+        th, td {
+            border: 1px solid #e0e0e0;
+            padding: 0.7rem 0.5rem;
+            text-align: center;
+            word-break: break-all;
+        }
+        th {
+            background: #e3f2fd;
+            color: #1565c0;
+            font-weight: bold;
+        }
+        tr:nth-child(even) {
+            background: #f9f9f9;
+        }
+        .link-index {
+            display: inline-block;
+            margin-top: 1rem;
+            color: #1565c0;
+            text-decoration: none;
+            font-weight: bold;
+            border: 1px solid #1565c0;
+            border-radius: 5px;
+            padding: 0.5rem 1.2rem;
+            transition: background 0.2s, color 0.2s;
+        }
+        .link-index:hover {
+            background: #1565c0;
+            color: #fff;
+        }
+        @media (max-width: 900px) {
+            .container { padding: 1rem; }
+            table, th, td { font-size: 0.95rem; }
+        }
+        @media (max-width: 600px) {
+            .container { padding: 0.5rem; }
+            header { font-size: 1.3rem; padding: 1rem 0; }
+            h2 { font-size: 1.1rem; }
+            table, th, td { font-size: 0.85rem; padding: 0.4rem 0.2rem; }
+            th, td { white-space: pre-line; }
+            table { display: block; overflow-x: auto; }
+        }
+        @media (max-width: 420px) {
+            .container { padding: 0.2rem; }
+            table, th, td { font-size: 0.75rem; }
+        }
+    </style>
+</head>
+<body>
+    <header>歷史訂票資訊</header>
+    <div class="container">
+        <h2>歷史訂票資訊</h2>
+        <div style="overflow-x:auto;">
+        <table>
+            <tr>
+                <th>id</th>
+                <th>訂位代號</th>
+                <th>訂票日期</th>
+                <th>姓名</th>
+                <th>身分證字號</th>
+                <th>車次</th>
+                <th>乘車日期</th>
+                <th>出發地點</th>
+                <th>出發時間</th>
+                <th>到達地點</th>
+                <th>到達時間</th>
+            </tr>
+            {% for r in history %}
+            <tr>
+                <td>{{ r.id }}</td>
+                <td>{{ r.code }}</td>
+                <td>{{ r.order_date }}</td>
+                <td>{{ r.name }}</td>
+                <td>{{ r.id_number }}</td>
+                <td>{{ r.train_no }}</td>
+                <td>{{ r.travel_date }}</td>
+                <td>{{ r.from_station }}</td>
+                <td>{{ r.from_time }}</td>
+                <td>{{ r.to_station }}</td>
+                <td>{{ r.to_time }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        </div>
+        <a class="link-index" href="/">返回訂票系統</a>
+    </div>
+</body>
+</html>
