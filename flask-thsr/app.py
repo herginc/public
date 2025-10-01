@@ -46,33 +46,25 @@ if channel_access_token is None:
 handler = WebhookHandler(channel_secret)
 configuration = Configuration(access_token=channel_access_token)
 
-count = 0
-
 @app.errorhandler(404)
 def page_not_found(error):
-    global count
-    count = count + 1
     print(f"[{error}] page not found or undefined route")
     return 'page not found', 404
 
 
 @app.route("/", methods=["GET"])
 def home():
-    global count
-    count = count + 1
     return "LINE Bot Webhook is running ..."
 
 
 @app.route("/echo", methods=['POST'])
 def cb_echo():
-    global count
-    count = count + 1
     # get request body as text
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
-    print(f"({count}) Body={body}")
-    sys.stdout.flush()
-    return 'OK', 200
+    print(f"--> POST data = {body}")
+    # sys.stdout.flush()
+    return f'[echo]: {body}', 200
 
 
 @app.route("/callback", methods=['POST'])
@@ -86,7 +78,7 @@ def line_webhook():
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
     print(f"Request body: {body}")
-    sys.stdout.flush()
+    # sys.stdout.flush()
 
     # handle webhook body
     try:
