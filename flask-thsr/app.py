@@ -71,7 +71,7 @@ def cb_echo():
 
 @app.route("/callback", methods=['POST'])
 def line_webhook():
-    print("receive a POST messages via a callback route")
+    print("receive a LINE bot webhook message")
 
     # get X-Line-Signature header value
     signature = request.headers['X-Line-Signature']
@@ -103,7 +103,7 @@ def message_text(event):
         )
 
 
-TICKET_DIR = "/json"
+TICKET_DIR = "/var/data"
 TICKET_REQUEST_FILE = os.path.join(TICKET_DIR, "ticket_requests.json")
 TICKET_HISTORY_FILE = os.path.join(TICKET_DIR, "ticket_history.json")
 
