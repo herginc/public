@@ -103,8 +103,9 @@ def message_text(event):
         )
 
 
-TICKET_REQUEST_FILE = "ticket_requests.json"
-TICKET_HISTORY_FILE = "ticket_history.json"
+TICKET_DIR = "/json"
+TICKET_REQUEST_FILE = os.path.join(TICKET_DIR, "ticket_requests.json")
+TICKET_HISTORY_FILE = os.path.join(TICKET_DIR, "ticket_history.json")
 
 def load_json(filename):
     if not os.path.exists(filename):
@@ -113,6 +114,8 @@ def load_json(filename):
         return json.load(f)
 
 def save_json(filename, data):
+    # Ensure the directory exists before saving
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
@@ -129,7 +132,7 @@ def index():
         data = request.form
         ticket = {
             "id": get_new_id(),
-            "status": "訂票待處理",
+            "status": "待處理",
             "order_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "name": data.get("name"),
             "id_number": data.get("id_number"),
@@ -157,7 +160,7 @@ def history():
 def api_ticket_requests():
     # For external system polling
     requests = load_json(TICKET_REQUEST_FILE)
-    pending = [r for r in requests if r["status"] == "訂票待處理"]
+    pending = [r for r in requests if r["status"] == "待處理"]
     return jsonify(pending)
 
 @app.route("/api/update_ticket_status", methods=["POST"])
