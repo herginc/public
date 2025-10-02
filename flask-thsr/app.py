@@ -103,7 +103,7 @@ def message_text(event):
         )
 
 
-TICKET_DIR = "/var/data"
+TICKET_DIR = "./"
 TICKET_REQUEST_FILE = os.path.join(TICKET_DIR, "ticket_requests.json")
 TICKET_HISTORY_FILE = os.path.join(TICKET_DIR, "ticket_history.json")
 
