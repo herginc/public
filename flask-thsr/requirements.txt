@@ -3,4 +3,12 @@
 line-bot-sdk
 flask
 gunicorn
-threading
+requests
+# flask-cors
+# flask-socketio
+# eventlet
+# long_polling_client
+
+# --- IGNORE ---
+# The following line is to avoid an issue with pip installing packages from requirements.txt
+# that contain a hyphen in their name. It can be removed if the issue is resolved
