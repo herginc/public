@@ -3,7 +3,7 @@
 #
 
 # ===============================================
-# 必須放在所有其他 import 之前
+# 必須放在所有其他 import 之前，解決 MonkeyPatchWarning
 import gevent.monkey
 gevent.monkey.patch_all()
 # ===============================================
@@ -175,59 +175,92 @@ def api_ticket_requests():
 from flask import Flask, request, jsonify
 import threading
 import time
+from typing import Dict, Any
 
 # app = Flask(__name__)
 
-# --- Critical Configuration (T2) & Global State ---
+# --- Critical Configuration & Global State ---
 
-# T3: Gunicorn Timeout is 300s (Set in the Start Command on Render)
-# T2: Server's internal wait time (The actual Long Polling cycle length)
-MAX_WAIT_TIME_SERVER = 298  # 最終設定: 298 秒
+# T3: Gunicorn Timeout. 必須大於 T1 (600s)。
+GUNICORN_TIMEOUT = 601 
+# T1: Client Base Timeout (預期從 Client POST 數據中取得，預設為 600s)
+BASE_CLIENT_TIMEOUT = 600 
 
-# Stores the LATEST event data 
-LATEST_EVENT_DATA = {"message": "Server initialized. No event yet."}
+# Server 狀態標記：是否已處理過請求 (用於模擬 Cold Start)
+IS_COLD_START = True 
 
-# Stores the LATEST active threading.Event object and its response data.
-current_waiting_event = None 
-current_response_data = None 
-
-# Lock mechanism for all global variables
+# 鎖定機制
 data_lock = threading.Lock() 
 
-# --- Long Polling Endpoint (T2) ---
+# 異步 Long Polling 狀態
+LATEST_EVENT_DATA: Dict[str, Any] = {"message": "Server initialized. No event yet."}
+current_waiting_event: threading.Event | None = None 
+current_response_data: Dict[str, Any] | None = None 
 
-@app.route('/poll_for_update', methods=['GET'])
+# --- 動態計算 T2 邏輯 ---
+
+def calculate_server_timeout(client_timeout_s: int) -> int:
+    """
+    根據 Client 傳入的超時時間，動態計算 Server 應阻塞多久 (T2)。
+    T2 必須 >= 60s
+    """
+    global IS_COLD_START
+    
+    # 規則 1: Server timeout = Client timeout - 1
+    t2 = client_timeout_s - 1 # T2 = 599s
+    
+    # 規則 3: 第一次請求 (模擬 Cold Start) T2 再減 60s
+    if IS_COLD_START:
+        t2 -= 60  # T2 = 539s
+        IS_COLD_START = False
+        print(f"[{time.strftime('%H:%M:%S')}] 🚨 COLD START DETECTED. T2 adjusted to {t2}s (-60s).")
+    
+    # 規則 2: Server timeout 必須 >= 60s (安全檢查)
+    return max(60, t2)
+
+# --- Long Polling Endpoint (使用 HTTP POST) ---
+
+@app.route('/poll_for_update', methods=['POST'])
 def long_poll_endpoint():
     """
-    Blocks for T2 (298 seconds) or until an event/new poll is triggered.
+    接收 Client POST 請求，並根據 Client 傳入的超時時間計算 T2 並阻塞。
     """
     global current_waiting_event, current_response_data
     
-    # 1. 收到請求時立即印出訊息
-    print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update request received.")
-
-    # 2. 準備新的 Event
-    new_client_event = threading.Event()
+    # 嘗試從 POST 數據中獲取 Client Timeout
+    client_timeout = BASE_CLIENT_TIMEOUT
+    try:
+        data = request.get_json()
+        client_timeout = data.get('client_timeout_s', BASE_CLIENT_TIMEOUT)
+        if not isinstance(client_timeout, int) or client_timeout < 61:
+             client_timeout = BASE_CLIENT_TIMEOUT
+    except Exception:
+        pass
     
-    # 3. 處理 PREVIOUS 請求 (如果有的話)
+    # 1. 計算 T2
+    max_wait_time_server = calculate_server_timeout(client_timeout)
+    
+    # 2. 記錄收到請求
+    print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update request (T1={client_timeout}s). T2 set to {max_wait_time_server}s.")
+
+    # 3. 準備新的 Event
+    new_client_event = threading.Event()
     with data_lock:
         if current_waiting_event:
-            print(f"[{time.strftime('%H:%M:%S')}] New poll arrived. Waking up the PREVIOUS request (Forced Reconnect).")
-            # 設定前一個請求的回覆數據
+            # 強制喚醒前一個請求
             current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
-            # 喚醒前一個等待中的執行緒
             current_waiting_event.set()
         
-        # 4. 儲存目前的 Event 作為 LATEST
         current_waiting_event = new_client_event
-        current_response_data = None # 清除這次請求的資料
+        current_response_data = None
     
-    print(f"[{time.strftime('%H:%M:%S')}] New poll entered WAITING state (Max {MAX_WAIT_TIME_SERVER}s).")
+    print(f"[{time.strftime('%H:%M:%S')}] New poll entered WAITING state (Max {max_wait_time_server}s).")
 
-    # 5. 阻塞 (Blocking) - 最多等待 T2 (298s)
-    is_triggered = new_client_event.wait(timeout=MAX_WAIT_TIME_SERVER)
+    # 4. 阻塞 (Blocking) - 等待 T2
+    # 這裡的 .wait() 因為 gevent.monkey.patch_all() 會變成非阻塞協程
+    is_triggered = new_client_event.wait(timeout=max_wait_time_server)
     
-    # 6. 取得回覆資料並清理狀態
+    # 5. 取得回覆資料並清理狀態
     with data_lock:
         response_payload = current_response_data
         # 只有在 current_waiting_event 確實是這個執行緒時，才清理全局狀態
@@ -235,47 +268,37 @@ def long_poll_endpoint():
             current_waiting_event = None
             current_response_data = None
 
-    # 7. 檢查結果並回覆
+    # 6. 檢查結果並回覆
     if response_payload:
-        # 路徑 A: 被 trigger_event 喚醒 OR 被 forced_reconnect 喚醒
+        # 被 trigger_event 喚醒 OR 被 forced_reconnect 喚醒
         return jsonify(response_payload), 200
     
     if is_triggered:
-        # 路徑 B: Event 被喚醒，但 response_payload 沒設 (Fallback)
+        # Fallback for immediate event (應發生在 response_payload 尚未清除時)
         with data_lock:
             data_to_send = LATEST_EVENT_DATA.copy()
-        print(f"[{time.strftime('%H:%M:%S')}] Triggered: Sending LATEST_EVENT_DATA (Fallback).")
         return jsonify({"status": "success", "data": data_to_send}), 200
     else:
-        # 路徑 C: Timeout 達到 (T=298s)。伺服器發送計劃性超時回覆。
+        # T2 Timeout 
         print(f"[{time.strftime('%H:%M:%S')}] Timeout reached. Sending 'No Update' response.")
         return jsonify({"status": "timeout", "message": "No new events."}), 200
 
-# --- Event Trigger Endpoint (非阻塞) ---
-
+# --- Event Trigger Endpoint ---
 @app.route('/trigger_event', methods=['POST'])
 def trigger_event():
-    """
-    Called by an external source. Updates state and wakes up the single waiting client instantly.
-    """
     data = request.get_json()
     
     with data_lock:
         global LATEST_EVENT_DATA, current_waiting_event, current_response_data
         
-        # 1. 立即處理事件資料
         LATEST_EVENT_DATA = data
-        
         notifications_sent = 0
         if current_waiting_event:
-            # 2. 設定回覆資料並喚醒等待中的 Worker
             current_response_data = {"status": "success", "data": LATEST_EVENT_DATA.copy()}
             current_waiting_event.set() 
             notifications_sent = 1
             
     print(f"[{time.strftime('%H:%M:%S')}] ✅ TRIGGERED: External event received. Waking up {notifications_sent} client.")
-
-    # 3. 立即回覆給觸發者 (非阻塞)
     return jsonify({"status": "event_received", "notifications_sent": notifications_sent}), 200
 
 if __name__ == "__main__":
