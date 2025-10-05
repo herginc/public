@@ -174,9 +174,9 @@ import time
 
 # --- Critical Configuration (T2) & Global State ---
 
-# T3: Gunicorn Timeout is 60s (Set in the Start Command on Render)
+# T3: Gunicorn Timeout is 300s (Set in the Start Command on Render)
 # T2: Server's internal wait time (The actual Long Polling cycle length)
-MAX_WAIT_TIME_SERVER = 57  # Experimental setting: 57 seconds
+MAX_WAIT_TIME_SERVER = 298  # 最終設定: 298 秒
 
 # Stores the LATEST event data 
 LATEST_EVENT_DATA = {"message": "Server initialized. No event yet."}
@@ -193,59 +193,59 @@ data_lock = threading.Lock()
 @app.route('/poll_for_update', methods=['GET'])
 def long_poll_endpoint():
     """
-    Blocks for T2 (57 seconds) or until an event/new poll is triggered.
+    Blocks for T2 (298 seconds) or until an event/new poll is triggered.
     """
     global current_waiting_event, current_response_data
     
-    # 1. Log immediately upon request receipt
+    # 1. 收到請求時立即印出訊息
     print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update request received.")
 
-    # 2. Prepare new Event
+    # 2. 準備新的 Event
     new_client_event = threading.Event()
     
-    # 3. Handle the PREVIOUS waiting request (if any)
+    # 3. 處理 PREVIOUS 請求 (如果有的話)
     with data_lock:
         if current_waiting_event:
             print(f"[{time.strftime('%H:%M:%S')}] New poll arrived. Waking up the PREVIOUS request (Forced Reconnect).")
-            # Set response data for the previous request
+            # 設定前一個請求的回覆數據
             current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
-            # Wake up the previous waiting thread
+            # 喚醒前一個等待中的執行緒
             current_waiting_event.set()
         
-        # 4. Store the current request's event as the LATEST
+        # 4. 儲存目前的 Event 作為 LATEST
         current_waiting_event = new_client_event
-        current_response_data = None # Clear data for the new request
+        current_response_data = None # 清除這次請求的資料
     
     print(f"[{time.strftime('%H:%M:%S')}] New poll entered WAITING state (Max {MAX_WAIT_TIME_SERVER}s).")
 
-    # 5. Block (Blocking) - Wait for up to T2 (57s)
+    # 5. 阻塞 (Blocking) - 最多等待 T2 (298s)
     is_triggered = new_client_event.wait(timeout=MAX_WAIT_TIME_SERVER)
     
-    # 6. Retrieve response data and clean up state
+    # 6. 取得回覆資料並清理狀態
     with data_lock:
         response_payload = current_response_data
-        # Only clear global state if this thread was the latest one waiting
+        # 只有在 current_waiting_event 確實是這個執行緒時，才清理全局狀態
         if new_client_event == current_waiting_event:
             current_waiting_event = None
             current_response_data = None
 
-    # 7. Check outcome and respond
+    # 7. 檢查結果並回覆
     if response_payload:
-        # Path A: Triggered by /trigger_event OR forced_reconnect
+        # 路徑 A: 被 trigger_event 喚醒 OR 被 forced_reconnect 喚醒
         return jsonify(response_payload), 200
     
     if is_triggered:
-        # Path B: Fallback for triggered event
+        # 路徑 B: Event 被喚醒，但 response_payload 沒設 (Fallback)
         with data_lock:
             data_to_send = LATEST_EVENT_DATA.copy()
         print(f"[{time.strftime('%H:%M:%S')}] Triggered: Sending LATEST_EVENT_DATA (Fallback).")
         return jsonify({"status": "success", "data": data_to_send}), 200
     else:
-        # Path C: Timeout reached (T=57s). Send a planned timeout response.
+        # 路徑 C: Timeout 達到 (T=298s)。伺服器發送計劃性超時回覆。
         print(f"[{time.strftime('%H:%M:%S')}] Timeout reached. Sending 'No Update' response.")
         return jsonify({"status": "timeout", "message": "No new events."}), 200
 
-# --- Event Trigger Endpoint (Non-blocking) ---
+# --- Event Trigger Endpoint (非阻塞) ---
 
 @app.route('/trigger_event', methods=['POST'])
 def trigger_event():
@@ -257,23 +257,20 @@ def trigger_event():
     with data_lock:
         global LATEST_EVENT_DATA, current_waiting_event, current_response_data
         
-        # 1. Immediately process event data
+        # 1. 立即處理事件資料
         LATEST_EVENT_DATA = data
         
         notifications_sent = 0
         if current_waiting_event:
-            # 2. Set response data and wake up the waiting Worker
+            # 2. 設定回覆資料並喚醒等待中的 Worker
             current_response_data = {"status": "success", "data": LATEST_EVENT_DATA.copy()}
             current_waiting_event.set() 
             notifications_sent = 1
             
     print(f"[{time.strftime('%H:%M:%S')}] ✅ TRIGGERED: External event received. Waking up {notifications_sent} client.")
 
-    # 3. Respond immediately to the external trigger
+    # 3. 立即回覆給觸發者 (非阻塞)
     return jsonify({"status": "event_received", "notifications_sent": notifications_sent}), 200
-
-# RENDER START COMMAND (T3 = 60s): gunicorn --timeout 60 --bind 0.0.0.0:$PORT app:app 
-# RENDER ENV VAR: TZ = Asia/Taipei
 
 if __name__ == "__main__":
     arg_parser = ArgumentParser(
@@ -285,3 +282,6 @@ if __name__ == "__main__":
 
     app.run(debug=options.debug, port=options.port, threaded=True)
     # app.run(host='0.0.0.0', port=5000, threaded=True)
+
+# RENDER START COMMAND (T3 = 300s): gunicorn --worker-class gevent --timeout 300 --bind 0.0.0.0:$PORT app:app 
+# RENDER ENV VAR: TZ = Asia/Taipei
