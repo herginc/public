@@ -10,6 +10,9 @@ from flask import Flask, request, abort, render_template, jsonify, redirect, url
 import json
 from datetime import datetime
 
+import time
+import threading
+
 from linebot.v3 import (
      WebhookHandler
 )
@@ -45,18 +48,15 @@ if channel_access_token is None:
     print('Specify LINE_CHANNEL_ACCESS_TOKEN as environment variable.')
     sys.exit(1)
 
+
 handler = WebhookHandler(channel_secret)
 configuration = Configuration(access_token=channel_access_token)
+
 
 @app.errorhandler(404)
 def page_not_found(error):
     print(f"[{error}] page not found or undefined route")
     return 'page not found', 404
-
-
-# @app.route("/", methods=["GET"])
-# def home():
-#     return "LINE Bot Webhook is running ..."
 
 
 @app.route("/echo", methods=['POST'])
@@ -163,31 +163,109 @@ def api_ticket_requests():
     pending = [r for r in requests if r["status"] == "待處理"]
     return jsonify(pending)
 
-@app.route("/api/update_ticket_status", methods=["POST"])
-def api_update_ticket_status():
-    # External system updates ticket status
-    data = request.json
-    ticket_id = data.get("id")
-    new_status = data.get("status")
-    code = data.get("code", "")
-    requests = load_json(TICKET_REQUEST_FILE)
-    updated = False
-    for r in requests:
-        if r["id"] == ticket_id:
-            r["status"] = new_status
-            if code:
-                r["code"] = code
-            updated = True
-            # If booking is successful, move to history
-            if new_status == "訂位代號" and code:
-                history = load_json(TICKET_HISTORY_FILE)
-                r_copy = r.copy()
-                r_copy["code"] = code
-                history.append(r_copy)
-                save_json(TICKET_HISTORY_FILE, history)
-    save_json(TICKET_REQUEST_FILE, requests)
-    return jsonify({"success": updated})
 
+# app.py - Web Server Code (Running on Render/Gunicorn)
+
+from flask import Flask, request, jsonify
+import threading
+import time
+
+# app = Flask(__name__)
+
+# --- Configuration & Global State ---
+
+# T3: Gunicorn Timeout is 600s (Set in the Start Command on Render)
+# T2: Server's internal wait time (The actual Long Polling cycle length)
+MAX_WAIT_TIME_SERVER = 590 
+
+# Stores the LATEST event data (used by trigger_event endpoint)
+LATEST_EVENT_DATA = {"message": "No event yet."}
+
+# Stores the LATEST active threading.Event object and its response data.
+current_waiting_event = None 
+current_response_data = None 
+
+# Lock mechanism for all global variables
+data_lock = threading.Lock() 
+
+# --- Long Polling Endpoint ---
+
+@app.route('/poll_for_update', methods=['GET'])
+def long_poll_endpoint():
+    """
+    The endpoint that blocks for T2 (590 seconds) or until an event/new poll is triggered.
+    """
+    global current_waiting_event, current_response_data
+    
+    # 1. Prepare for the new request
+    new_client_event = threading.Event()
+    
+    # 2. Handle the PREVIOUS waiting request (if any)
+    with data_lock:
+        if current_waiting_event:
+            print(f"[{time.strftime('%H:%M:%S')}] A new poll arrived! Waking up the PREVIOUS request.")
+            # Set a response data for the previous request before waking it up
+            current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
+            # Wake up the previous waiting thread instantly
+            current_waiting_event.set()
+        
+        # 3. Store the current request's event as the LATEST
+        current_waiting_event = new_client_event
+        current_response_data = None # Clear data for the new request
+    
+    print(f"[{time.strftime('%H:%M:%S')}] New poll entered waiting state (Max {MAX_WAIT_TIME_SERVER}s).")
+
+    # 4. Block until T2 (590s) is reached, or an external set() happens.
+    is_triggered = new_client_event.wait(timeout=MAX_WAIT_TIME_SERVER)
+    
+    # 5. Get the response data and clear the state
+    with data_lock:
+        response_payload = current_response_data
+        # If this is the request that timed out or was naturally triggered, clear the global state.
+        if new_client_event == current_waiting_event:
+            current_waiting_event = None
+            current_response_data = None
+
+    # 6. Check the outcome
+    if response_payload:
+        # Path A: Responded because it was forced_reconnect OR trigger_event.
+        return jsonify(response_payload), 200
+    
+    if is_triggered:
+        # Path B: Event was triggered, but response_payload wasn't explicitly set (Fallback).
+        with data_lock:
+            data_to_send = LATEST_EVENT_DATA.copy()
+        return jsonify({"status": "success", "data": data_to_send}), 200
+    else:
+        # Path C: Timeout reached (T=590s). Server sends a planned timeout response.
+        print(f"[{time.strftime('%H:%M:%S')}] Timeout reached. Sending 'No Update' response.")
+        return jsonify({"status": "timeout", "message": "No new events."}), 200
+
+# --- Event Trigger Endpoint ---
+
+@app.route('/trigger_event', methods=['POST'])
+def trigger_event():
+    """
+    Called by an external source. Updates state and wakes up the single waiting client instantly.
+    """
+    data = request.get_json()
+    
+    with data_lock:
+        global LATEST_EVENT_DATA, current_waiting_event, current_response_data
+        LATEST_EVENT_DATA = data
+        
+        notifications_sent = 0
+        if current_waiting_event:
+            # Set the response data before waking up the worker
+            current_response_data = {"status": "success", "data": LATEST_EVENT_DATA.copy()}
+            current_waiting_event.set() 
+            notifications_sent = 1
+            
+    print(f"[{time.strftime('%H:%M:%S')}] Received external event. Waking up {notifications_sent} client.")
+
+    return jsonify({"status": "event_received", "notifications_sent": notifications_sent}), 200
+
+# RENDER START COMMAND: gunicorn --timeout 600 --bind 0.0.0.0:$PORT app:app
 
 if __name__ == "__main__":
     arg_parser = ArgumentParser(
@@ -197,4 +275,5 @@ if __name__ == "__main__":
     arg_parser.add_argument('-d', '--debug', default=True, help='debug')
     options = arg_parser.parse_args()
 
-    app.run(debug=options.debug, port=options.port)
+    app.run(debug=options.debug, port=options.port, threaded=True)
+    # app.run(host='0.0.0.0', port=5000, threaded=True)
