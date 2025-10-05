@@ -2,6 +2,12 @@
 # Flask THSR Parser
 #
 
+# ===============================================
+# 必須放在所有其他 import 之前
+import gevent.monkey
+gevent.monkey.patch_all()
+# ===============================================
+
 import os
 import sys
 from argparse import ArgumentParser
