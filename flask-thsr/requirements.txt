@@ -4,10 +4,8 @@ line-bot-sdk
 flask
 gunicorn
 requests
-# flask-cors
-# flask-socketio
-# eventlet
-# long_polling_client
+gevent  
+
 
 # --- IGNORE ---
 # The following line is to avoid an issue with pip installing packages from requirements.txt
