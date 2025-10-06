@@ -1,6 +1,6 @@
-# ===============================================
-# app.py (Flask Web Server) - 最終 JSON API 版本
-# ===============================================
+# =======================================================
+# app.py (Flask Web Server) - 最終任務持久化同步版本
+# =======================================================
 
 import gevent.monkey
 gevent.monkey.patch_all()
@@ -20,7 +20,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 from flask import Flask, request, abort, render_template, jsonify, render_template_string
 
 # --- LINE Bot (保持原有結構，與核心功能獨立) ---
-# (省略 LINE Bot 相關設定和路由，因為它們不影響核心訂票流程)
+# (省略 LINE Bot 相關設定和路由)
 # -----------------------------------------------
 
 app = Flask(__name__)
@@ -67,7 +67,6 @@ def get_new_id():
         max_id = max(max_id, max(h.get("id", 0) for h in history))
     return max_id + 1
 
-# --- 時間同步函式 (保持不變) ---
 def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
     try:
         client_start_time_naive = datetime.fromisoformat(client_timestamp_str)
@@ -81,12 +80,12 @@ def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -
         print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2={max(0, client_timeout_s - MAX_NETWORK_LATENCY)}s.")
         return max(0, client_timeout_s - MAX_NETWORK_LATENCY)
 
-# --- 任務推送函式 (保持不變) ---
 def push_task_to_client(task_data: Dict[str, Any]):
     global current_waiting_event, current_response_data
     with data_lock:
         notifications_sent = 0
         if current_waiting_event:
+            # 被喚醒的客戶端將收到單一新任務
             current_response_data = {"status": "success", "data": task_data.copy()}
             current_waiting_event.set() 
             notifications_sent = 1
@@ -97,17 +96,15 @@ def push_task_to_client(task_data: Dict[str, Any]):
 # --- 路由定義 ---
 # ===================================================
 
-# 1. 訂票首頁 (僅渲染頁面，不再處理 POST)
+# 1. 訂票首頁 (GET)
 @app.route("/", methods=["GET"])
 def index():
-    """僅渲染首頁 (index.html) 並顯示當前待處理任務。"""
     requests = load_json(TICKET_REQUEST_FILE)
     return render_template("index.html", requests=requests)
 
-# 2. **JSON API** 訂票提交路由
+# 2. JSON API 訂票提交路由
 @app.route("/api/submit_ticket", methods=["POST"])
 def api_submit_ticket():
-    """接收 Content-Type: application/json 提交的訂票請求。"""
     try:
         data = request.get_json()
         
@@ -134,12 +131,12 @@ def api_submit_ticket():
             "code": None
         }
         
-        # 1. 記錄到待處理佇列
+        # 1. 記錄到持久化佇列
         requests = load_json(TICKET_REQUEST_FILE)
         requests.append(ticket)
         save_json(TICKET_REQUEST_FILE, requests)
         
-        # 2. 自動推送任務 給 Long Polling Client
+        # 2. 自動推送通知（如果 client 正在等候）
         push_task_to_client(ticket)
         
         print(f"[{time.strftime('%H:%M:%S')}] 📝 JSON SUBMIT: New task ID {ticket['id']} created.")
@@ -191,7 +188,7 @@ def api_pending_table():
     rendered_html = render_template_string(template_str, requests=requests)
     return rendered_html, 200
 
-# 5. Long Polling 端點 (保持不變)
+# 5. Long Polling 端點 (**已實現持久化同步**)
 @app.route('/poll_for_update', methods=['POST'])
 def long_poll_endpoint():
     global current_waiting_event, current_response_data
@@ -207,16 +204,33 @@ def long_poll_endpoint():
     max_wait_time_server = calculate_server_timeout(client_timeout, client_timestamp)
     print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update. T2 set to {max_wait_time_server}s.")
 
+    # --- 關鍵修改點：檢查待處理任務佇列 (同步邏輯) ---
+    # 確保在進入阻塞狀態前，先檢查是否有 Client 錯過的任務
+    requests = load_json(TICKET_REQUEST_FILE)
+    if requests:
+        # 如果佇列中有任務，立即回傳所有待處理任務
+        print(f"[{time.strftime('%H:%M:%S')}] 🚨 WAITING TASKS FOUND: Returning {len(requests)} pending tasks immediately.")
+        # 回傳所有任務，客戶端必須自行判斷哪些任務是它還沒處理過的。
+        return jsonify({
+            "status": "initial_sync",
+            "message": "Found pending tasks in queue.",
+            "data": requests.copy() # 將整個任務列表回傳
+        }), 200
+    # --- 關鍵修改點結束 ---
+
+    # 如果佇列為空，進入正常 Long Polling 阻塞流程
     new_client_event = threading.Event()
     response_payload = None
     with data_lock:
         if current_waiting_event:
+            # 如果有其他客戶端正在等候，強制它重新輪詢
             current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
             current_waiting_event.set()
         
         current_waiting_event = new_client_event
         current_response_data = None
     
+    # 阻塞等待新任務或超時
     is_triggered = new_client_event.wait(timeout=max_wait_time_server)
     
     with data_lock:
@@ -238,6 +252,7 @@ def long_poll_endpoint():
 # 6. 任務結果回傳端點 (保持不變)
 @app.route('/update_status', methods=['POST'])
 def update_status():
+    # ... (程式碼保持不變) ...
     try:
         data = request.get_json()
         task_id = data.get('task_id')
