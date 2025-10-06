@@ -177,52 +177,57 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta 
 from typing import Dict, Any
+from zoneinfo import ZoneInfo
 
 # app = Flask(__name__)
 
 # --- Critical Configuration & Global State ---
 
-# T3: Gunicorn Timeout. 必須大於 T1 (600s)。
 GUNICORN_TIMEOUT = 601 
-# T1: Client Base Timeout (預期從 Client POST 數據中取得，預設為 600s)
 BASE_CLIENT_TIMEOUT = 600 
 
 data_lock = threading.Lock() 
+
+# 定義 Client 所在的時區 (使用 zoneinfo)
+CST_TIMEZONE = ZoneInfo('Asia/Taipei') 
 
 LATEST_EVENT_DATA: Dict[str, Any] = {"message": "Server initialized. No event yet."}
 current_waiting_event: threading.Event | None = None 
 current_response_data: Dict[str, Any] | None = None 
 
-# --- 精確計算 T2 邏輯 ---
+# --- 精確計算 T2 邏輯 (已修復) ---
 
 def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
     """
-    根據 Client 傳入的超時時間和請求開始時間，計算 T2 (Server 應阻塞的秒數)。
-    T2 的結束點 = Client 請求時間點 + Client Timeout (T1) - 1 秒
+    根據 Client 傳入的時間，計算 T2 (Server 應阻塞的秒數)。
     """
     
     try:
-        # 1. 解析 Client 請求時間 (新修正：將 naive 標記為 UTC)
+        # 1. 解析 Client 請求時間 (作為無時區的 datetime)
         client_start_time_naive = datetime.fromisoformat(client_timestamp_str)
-        # 強制標記為 UTC，使其成為 offset-aware，解決相減錯誤
-        client_start_time = client_start_time_naive.replace(tzinfo=timezone.utc)
         
-        # 2. 計算 T2 必須結束的目標時間點 (T1 結束前 1 秒)
-        t2_end_time = client_start_time + timedelta(seconds=client_timeout_s - 1)
+        # 2. **關鍵修正：** 標記 Client 時間為 CST，然後轉換為 UTC
+        #    a. 告訴 Python 這個時間是 CST/Asia/Taipei
+        client_start_time_cst = client_start_time_naive.replace(tzinfo=CST_TIMEZONE)
+        #    b. 將 CST 轉換為 UTC
+        client_start_time_utc = client_start_time_cst.astimezone(timezone.utc)
         
-        # 3. 獲取當前 Server 的時間 (已是 offset-aware)
+        # 3. 計算 T2 必須結束的目標時間點 (T1 結束前 1 秒)
+        t2_end_time = client_start_time_utc + timedelta(seconds=client_timeout_s - 1)
+        
+        # 4. 獲取當前 Server 的時間 (已是 offset-aware UTC)
         current_server_time = datetime.now(timezone.utc)
         
-        # 4. 計算 Server 應阻塞的剩餘秒數 (T2)
+        # 5. 計算 Server 應阻塞的剩餘秒數 (T2)
+        # 兩個 offset-aware UTC 時間相減，結果會是正確的 (約 599 秒)
         time_to_wait = (t2_end_time - current_server_time).total_seconds()
         
         # 規則: T2 必須 >= 0 
         return max(0, int(time_to_wait))
         
     except Exception as e:
-        # 當 timestamp 格式不正確時
+        # 這裡會捕獲格式錯誤等
         print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2=599s.")
-        # 如果解析失敗，則使用預設 T1-1 的安全值
         return max(0, client_timeout_s - 1)
 
 # --- Long Polling Endpoint (使用 HTTP POST) ---
