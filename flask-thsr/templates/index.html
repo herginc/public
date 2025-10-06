@@ -5,6 +5,7 @@
     <title>高鐵訂票系統</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
+        /* (CSS 樣式保持不變，省略) */
         body { font-family: "Noto Sans TC", Arial, sans-serif; background: #f7f7fa; margin: 0; padding: 0; }
         header { background: #1565c0; color: #fff; padding: 1.5rem 0; text-align: center; letter-spacing: 0.1em; font-size: 2rem; margin-bottom: 2rem; box-shadow: 0 2px 8px #ccc; }
         .container { max-width: 900px; margin: 0 auto; background: #fff; border-radius: 10px; box-shadow: 0 2px 12px #ddd; padding: 2rem 2.5rem 2.5rem 2.5rem; }
@@ -28,7 +29,7 @@
     <header>高鐵訂票系統</header>
     <div class="container">
         <h2>訂票表單</h2>
-        <form method="post">
+        <form id="booking-form"> 
             <label>姓名<input name="name" required autocomplete="off"></label>
             <label>身分證字號<input name="id_number" required autocomplete="off"></label>
             <label>車次<input name="train_no" required autocomplete="off"></label>
@@ -86,24 +87,21 @@
     </div>
     
     <script>
-        // --- 解決 UX 問題的 AJAX 短輪詢腳本 ---
-        const POLLING_INTERVAL_MS = 10000; // 每 10 秒更新一次
-        const tableBody = document.querySelector('#pending-tasks-body'); // 定位表格 tbody
+        // --- 狀態 AJAX 短輪詢腳本 ---
+        const POLLING_INTERVAL_MS = 10000; 
+        const tableBody = document.querySelector('#pending-tasks-body'); 
     
         function fetchAndUpdateStatus() {
-            // 請求 app.py 的新 API，獲取新的表格行 HTML 片段
             fetch('/api/pending_table')
                 .then(response => {
                     if (!response.ok) {
                         throw new Error('Network response was not ok');
                     }
-                    return response.text(); // 接收 HTML 文字
+                    return response.text(); 
                 })
                 .then(html => {
-                    // 使用接收到的 HTML 替換 tbody 的內容
                     if (tableBody) {
                         tableBody.innerHTML = html;
-                        // console.log(`[${new Date().toLocaleTimeString()}] Table updated successfully.`);
                     }
                 })
                 .catch(error => {
@@ -114,6 +112,46 @@
         // 立即執行一次，然後每隔 10 秒執行一次
         fetchAndUpdateStatus();
         setInterval(fetchAndUpdateStatus, POLLING_INTERVAL_MS);
+
+
+        // --- JSON 提交處理腳本 ---
+        const form = document.getElementById('booking-form');
+        const API_SUBMIT_URL = '/api/submit_ticket'; // 新增的 API 端點
+
+        form.addEventListener('submit', function(event) {
+            event.preventDefault(); // 阻止瀏覽器預設的表單提交
+
+            // 1. 收集表單數據並轉換為 JSON 物件
+            const formData = new FormData(form);
+            const data = {};
+            formData.forEach((value, key) => {
+                data[key] = value;
+            });
+
+            // 2. 發送 JSON 請求
+            fetch(API_SUBMIT_URL, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json', // 關鍵：設定為 JSON 格式
+                },
+                body: JSON.stringify(data) // 傳遞 JSON 字串
+            })
+            .then(response => response.json())
+            .then(result => {
+                if (result.status === 'success') {
+                    alert(`訂票任務已成功提交！任務 ID: ${result.task_id}`);
+                    form.reset(); 
+                    // 立即更新表格
+                    fetchAndUpdateStatus(); 
+                } else {
+                    alert('提交失敗: ' + result.message);
+                }
+            })
+            .catch(error => {
+                console.error('提交錯誤:', error);
+                alert('網路連線或伺服器發生錯誤。');
+            });
+        });
     </script>
 </body>
 </html>

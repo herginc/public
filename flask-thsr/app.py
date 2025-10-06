@@ -1,5 +1,5 @@
 # ===============================================
-# app.py (Flask Web Server) - 已修正 AJAX 更新
+# app.py (Flask Web Server) - 最終 JSON API 版本
 # ===============================================
 
 import gevent.monkey
@@ -15,30 +15,23 @@ from typing import Dict, Any
 from zoneinfo import ZoneInfo
 from argparse import ArgumentParser
 
-from flask import Flask, request, abort, render_template, jsonify, redirect, url_for, render_template_string # <-- 新增 render_template_string
+# 修正 Render 環境下的重定向問題
+from werkzeug.middleware.proxy_fix import ProxyFix 
+from flask import Flask, request, abort, render_template, jsonify, render_template_string
 
-# --- LINE Bot (保持原有結構) ---
-from linebot.v3 import WebhookHandler
-from linebot.v3.exceptions import InvalidSignatureError
-from linebot.v3.webhooks import MessageEvent, TextMessageContent
-from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
-
-# 假設 LINE Bot 相關設定已存在
-channel_secret = os.getenv('LINE_CHANNEL_SECRET', None)
-channel_access_token = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', None)
-
-if channel_secret is None or channel_access_token is None:
-    # 實際運行時需要這些變數
-    pass 
-# --- LINE Bot End ---
-
+# --- LINE Bot (保持原有結構，與核心功能獨立) ---
+# (省略 LINE Bot 相關設定和路由，因為它們不影響核心訂票流程)
+# -----------------------------------------------
 
 app = Flask(__name__)
+# 啟用 ProxyFix 修正 Render/Gunicorn 環境下的 URL 重定向問題
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1) 
 
 # --- 核心配置與全局狀態 ---
 MAX_NETWORK_LATENCY = 5
 BASE_CLIENT_TIMEOUT = 600 + MAX_NETWORK_LATENCY
 CST_TIMEZONE = ZoneInfo('Asia/Taipei') 
+
 data_lock = threading.Lock() 
 current_waiting_event: threading.Event | None = None 
 current_response_data: Dict[str, Any] | None = None 
@@ -101,54 +94,77 @@ def push_task_to_client(task_data: Dict[str, Any]):
 
 
 # ===================================================
-# --- 路由定義 (已修改 index 和新增 AJAX 路由) ---
+# --- 路由定義 ---
 # ===================================================
 
-# 1. 訂票首頁/提交訂票
-@app.route("/", methods=["GET", "POST"])
+# 1. 訂票首頁 (僅渲染頁面，不再處理 POST)
+@app.route("/", methods=["GET"])
 def index():
-    if request.method == "POST":
-        data = request.form
+    """僅渲染首頁 (index.html) 並顯示當前待處理任務。"""
+    requests = load_json(TICKET_REQUEST_FILE)
+    return render_template("index.html", requests=requests)
+
+# 2. **JSON API** 訂票提交路由
+@app.route("/api/submit_ticket", methods=["POST"])
+def api_submit_ticket():
+    """接收 Content-Type: application/json 提交的訂票請求。"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"status": "error", "message": "Missing JSON data in request body."}), 400
+
+        required_fields = ["name", "id_number", "train_no", "travel_date", "from_station", "from_time", "to_station", "to_time"]
+        for field in required_fields:
+            if not data.get(field):
+                 return jsonify({"status": "error", "message": f"Missing required field: {field}"}), 400
+                 
         ticket = {
             "id": get_new_id(),
             "status": "待處理",
             "order_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "name": data.get("name"),
-            "id_number": data.get("id_number"),
-            "train_no": data.get("train_no"),
-            "travel_date": data.get("travel_date"),
-            "from_station": data.get("from_station"),
-            "from_time": data.get("from_time"),
-            "to_station": data.get("to_station"),
-            "to_time": data.get("to_time"),
+            "name": data["name"],
+            "id_number": data["id_number"],
+            "train_no": data["train_no"],
+            "travel_date": data["travel_date"],
+            "from_station": data["from_station"],
+            "from_time": data["from_time"],
+            "to_station": data["to_station"],
+            "to_time": data["to_time"],
             "code": None
         }
         
+        # 1. 記錄到待處理佇列
         requests = load_json(TICKET_REQUEST_FILE)
         requests.append(ticket)
         save_json(TICKET_REQUEST_FILE, requests)
         
+        # 2. 自動推送任務 給 Long Polling Client
         push_task_to_client(ticket)
         
-        return redirect(url_for("index")) # 提交成功後重定向回 GET 頁面
-        
-    # GET 請求: 顯示當前待處理任務 (初始渲染)
-    requests = load_json(TICKET_REQUEST_FILE)
-    return render_template("index.html", requests=requests)
+        print(f"[{time.strftime('%H:%M:%S')}] 📝 JSON SUBMIT: New task ID {ticket['id']} created.")
+        return jsonify({
+            "status": "success", 
+            "message": "Booking task submitted successfully.",
+            "task_id": ticket["id"]
+        }), 201 
 
-# 2. 歷史記錄頁面 (保持不變)
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] ❌ JSON SUBMIT UNKNOWN ERROR: {e}")
+        return jsonify({"status": "internal_error", "message": str(e)}), 500
+
+
+# 3. 歷史記錄頁面 (保持不變)
 @app.route("/history.html")
 def history():
     history = load_json(TICKET_HISTORY_FILE)
     return render_template("history.html", history=history)
 
-# 3. **新增** AJAX 短輪詢路由
+# 4. AJAX 短輪詢路由 (保持不變)
 @app.route("/api/pending_table", methods=["GET"])
 def api_pending_table():
-    """回傳當前待處理任務的 HTML 表格內容 (<tbody> 內的<tr>s)"""
     requests = load_json(TICKET_REQUEST_FILE)
     
-    # 定義只渲染表格行 (<tr>) 的 Jinja 模板片段
     template_str = """
     {% for r in requests %}
     <tr>
@@ -173,10 +189,9 @@ def api_pending_table():
     """
     
     rendered_html = render_template_string(template_str, requests=requests)
-    
     return rendered_html, 200
 
-# 4. Long Polling 端點 (保持不變)
+# 5. Long Polling 端點 (保持不變)
 @app.route('/poll_for_update', methods=['POST'])
 def long_poll_endpoint():
     global current_waiting_event, current_response_data
@@ -220,7 +235,7 @@ def long_poll_endpoint():
     return jsonify({"status": "internal_error", "message": "Unknown trigger state."}), 500
 
 
-# 5. 任務結果回傳端點 (保持不變)
+# 6. 任務結果回傳端點 (保持不變)
 @app.route('/update_status', methods=['POST'])
 def update_status():
     try:
@@ -258,7 +273,6 @@ def update_status():
             save_json(TICKET_REQUEST_FILE, requests)
         
         if found:
-            print(f"[{time.strftime('%H:%M:%S')}] 💾 STATUS UPDATE: Task ID {task_id} updated to '{status}'.")
             return jsonify({"status": "success", "message": f"Task {task_id} status updated to {status}."}), 200
         else:
             return jsonify({"status": "not_found", "message": f"Task {task_id} not found."}), 404
