@@ -172,86 +172,146 @@ def api_ticket_requests():
 
 # app.py - Web Server Code (Running on Render/Gunicorn)
 
-import requests
+from flask import Flask, request, jsonify
+import threading
 import time
-import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any
 
 # app = Flask(__name__)
 
-# --- Configuration ---
+# --- Critical Configuration & Global State ---
 
-SERVER_URL = "https://flask-thsr.onrender.com/poll_for_update" 
-# T1: Client Base Timeout (600s)
-CLIENT_TIMEOUT = 600 
-# RETRY_DELAY (60s) 僅用於 requests.exceptions.RequestException
-RETRY_DELAY = 60 
+# T3: Gunicorn Timeout. 必須大於 T1 (600s)。
+GUNICORN_TIMEOUT = 601 
+# T1: Client Base Timeout (預期從 Client POST 數據中取得，預設為 600s)
+BASE_CLIENT_TIMEOUT = 600 
 
-# --- Long Polling Loop ---
+# 鎖定機制
+data_lock = threading.Lock() 
 
-def run_long_polling():
+# 異步 Long Polling 狀態
+LATEST_EVENT_DATA: Dict[str, Any] = {"message": "Server initialized. No event yet."}
+current_waiting_event: threading.Event | None = None 
+current_response_data: Dict[str, Any] | None = None 
+
+# --- 精確計算 T2 邏輯 ---
+
+def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
+    """
+    根據 Client 傳入的超時時間和請求開始時間，計算 T2 (Server 應阻塞的秒數)。
+
+    T2 的結束點 = Client 請求時間點 + Client Timeout (T1) - 1 秒
+    T2 = T2 結束點 - 當前時間點
+    """
     
-    print(f"[{time.strftime('%H:%M:%S')}] Starting client. Cycle: {CLIENT_TIMEOUT - 1}s max.")
+    try:
+        # 1. 解析 Client 請求時間 (假設為 ISO 格式)
+        # 由於 Client 沒有指定時區，我們暫時將其視為 UTC 以避免本地時區混亂
+        client_start_time = datetime.fromisoformat(client_timestamp_str.replace('Z', '+00:00'))
+        
+        # 2. 計算 T2 必須結束的目標時間點 (T1 結束前 1 秒)
+        # T2_end_time = client_start_time + T1 - 1s
+        t2_end_time = client_start_time + timedelta(seconds=client_timeout_s - 1)
+        
+        # 3. 獲取當前 Server 的時間
+        current_server_time = datetime.now(timezone.utc)
+        
+        # 4. 計算 Server 應阻塞的剩餘秒數 (T2)
+        # T2 = T2_end_time - current_server_time
+        time_to_wait = (t2_end_time - current_server_time).total_seconds()
+        
+        # 規則: T2 必須 >= 0 
+        return max(0, int(time_to_wait))
+        
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2=599s.")
+        # 如果解析失敗，則使用預設 T1-1 的安全值
+        return max(0, client_timeout_s - 1)
+
+# --- Long Polling Endpoint (使用 HTTP POST) ---
+
+@app.route('/poll_for_update', methods=['POST'])
+def long_poll_endpoint():
+    """
+    接收 Client POST 請求，計算 T2 並阻塞。
+    """
+    global current_waiting_event, current_response_data
     
-    while True:
+    client_timeout = BASE_CLIENT_TIMEOUT
+    client_timestamp = ""
+    
+    # 嘗試從 POST 數據中獲取 Client 資訊
+    try:
+        data = request.get_json()
+        client_timeout = data.get('client_timeout_s', BASE_CLIENT_TIMEOUT)
+        client_timestamp = data.get('timestamp', "")
         
-        # 1. 記錄請求開始時間 (用於 POST 數據)
-        request_start_time = datetime.now()
-        
-        print(f"[{time.strftime('%H:%M:%S')}] Client initiating request (POST). Max patience: {CLIENT_TIMEOUT}s.")
-        
-        # 2. 準備 POST 數據
-        post_data: Dict[str, Any] = {
-            "client_timeout_s": CLIENT_TIMEOUT,
-            # 傳送 ISO 格式的 timestamp 給 Server 進行 T2 計算
-            "timestamp": request_start_time.isoformat() 
-        }
-        
-        # --- Long Poll Request ---
-        try:
-            # 3. 發送 HTTP POST 請求，使用 T1 = 600 秒超時
-            response = requests.post(SERVER_URL, json=post_data, timeout=CLIENT_TIMEOUT) 
-            
-            # --- Status Code Handling ---
-            if response.status_code == 404:
-                print("\n" + "="*70)
-                print(f"[{time.strftime('%H:%M:%S')}] **FATAL ERROR: Server returned 404 (Not Found).**")
-                print("Program terminated due to incorrect path configuration.")
-                print("="*70 + "\n")
-                sys.exit(1)
+        if not isinstance(client_timeout, int) or client_timeout < 1:
+             client_timeout = BASE_CLIENT_TIMEOUT
+    except Exception:
+        pass
+    
+    # 1. 計算 T2 (精確計算)
+    max_wait_time_server = calculate_server_timeout(client_timeout, client_timestamp)
+    
+    # 2. 記錄收到請求
+    print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update (T1={client_timeout}s, Ts={client_timestamp}). T2 set to {max_wait_time_server}s.")
 
-            elif response.status_code == 200:
-                data = response.json()
-                status = data.get("status")
-
-                if status == "success":
-                    # Instant notification received (T < T2)
-                    print("="*50)
-                    print(f"[{time.strftime('%H:%M:%S')}] **🚀 RECEIVED INSTANT NOTIFICATION!**")
-                    print(f"Data: {data.get('data')}")
-                    print("="*50)
-                
-                else:  # Handles "timeout" and "forced_reconnect"
-                    print(f"[{time.strftime('%H:%M:%S')}] Connection ended ({status}). Initiating next poll immediately.")
-                
-            else:
-                # Other server errors (500, 502, etc.)
-                print(f"[{time.strftime('%H:%M:%S')}] Server returned unexpected status code: {response.status_code}. Initiating next poll immediately.")
+    # 3. 準備新的 Event (與之前版本相同)
+    new_client_event = threading.Event()
+    with data_lock:
+        if current_waiting_event:
+            # 強制喚醒前一個請求
+            current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
+            current_waiting_event.set()
         
-        # --- Exception Handling ---
-        except requests.exceptions.Timeout:
-            # T1 Timeout (600s) 發生，表示 T3 (Gunicorn) 超時可能先發生了
-            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ UNEXPECTED TIMEOUT: Client request timed out ({CLIENT_TIMEOUT}s reached). Initiating next poll immediately.")
+        current_waiting_event = new_client_event
+        current_response_data = None
+    
+    print(f"[{time.strftime('%H:%M:%S')}] New poll entered WAITING state (Max {max_wait_time_server}s).")
+
+    # 4. 阻塞 (Blocking) - 等待 T2
+    is_triggered = new_client_event.wait(timeout=max_wait_time_server)
+    
+    # 5. 取得回覆資料並清理狀態 (與之前版本相同)
+    with data_lock:
+        response_payload = current_response_data
+        if new_client_event == current_waiting_event:
+            current_waiting_event = None
+            current_response_data = None
+
+    # 6. 檢查結果並回覆
+    if response_payload:
+        return jsonify(response_payload), 200
+    
+    if is_triggered:
+        # Fallback (不太可能發生)
+        with data_lock:
+            data_to_send = LATEST_EVENT_DATA.copy()
+        return jsonify({"status": "success", "data": data_to_send}), 200
+    else:
+        # T2 Timeout 達到，Server 主動斷線
+        print(f"[{time.strftime('%H:%M:%S')}] Timeout reached. Sending 'No Update' response.")
+        return jsonify({"status": "timeout", "message": "No new events."}), 200
+
+# --- Event Trigger Endpoint (保持不變) ---
+@app.route('/trigger_event', methods=['POST'])
+def trigger_event():
+    data = request.get_json()
+    
+    with data_lock:
+        global LATEST_EVENT_DATA, current_waiting_event, current_response_data
+        
+        LATEST_EVENT_DATA = data
+        notifications_sent = 0
+        if current_waiting_event:
+            current_response_data = {"status": "success", "data": LATEST_EVENT_DATA.copy()}
+            current_waiting_event.set() 
+            notifications_sent = 1
             
-        except requests.exceptions.RequestException as e:
-            # 連線失敗、DNS 錯誤等硬性網路問題
-            print(f"[{time.strftime('%H:%M:%S')}] ⛔ CONNECTION ERROR: {e}. Retrying in {RETRY_DELAY} seconds...")
-            time.sleep(RETRY_DELAY)
-            
-        except Exception as e:
-            # 其他所有未知錯誤
-            print(f"[{time.strftime('%H:%M:%S')}] ❌ UNKNOWN ERROR: {e}. Initiating next poll immediately.")
+    print(f"[{time.strftime('%H:%M:%S')}] ✅ TRIGGERED: External event received. Waking up {notifications_sent} client.")
+    return jsonify({"status": "event_received", "notifications_sent": notifications_sent}), 200
 
 
 if __name__ == "__main__":
