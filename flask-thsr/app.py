@@ -175,7 +175,7 @@ def api_ticket_requests():
 from flask import Flask, request, jsonify
 import threading
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta 
 from typing import Dict, Any
 
 # app = Flask(__name__)
@@ -187,10 +187,8 @@ GUNICORN_TIMEOUT = 601
 # T1: Client Base Timeout (預期從 Client POST 數據中取得，預設為 600s)
 BASE_CLIENT_TIMEOUT = 600 
 
-# 鎖定機制
 data_lock = threading.Lock() 
 
-# 異步 Long Polling 狀態
 LATEST_EVENT_DATA: Dict[str, Any] = {"message": "Server initialized. No event yet."}
 current_waiting_event: threading.Event | None = None 
 current_response_data: Dict[str, Any] | None = None 
@@ -200,31 +198,29 @@ current_response_data: Dict[str, Any] | None = None
 def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
     """
     根據 Client 傳入的超時時間和請求開始時間，計算 T2 (Server 應阻塞的秒數)。
-
     T2 的結束點 = Client 請求時間點 + Client Timeout (T1) - 1 秒
-    T2 = T2 結束點 - 當前時間點
     """
     
     try:
-        # 1. 解析 Client 請求時間 (假設為 ISO 格式)
-        # 由於 Client 沒有指定時區，我們暫時將其視為 UTC 以避免本地時區混亂
-        client_start_time = datetime.fromisoformat(client_timestamp_str.replace('Z', '+00:00'))
+        # 1. 解析 Client 請求時間 (新修正：將 naive 標記為 UTC)
+        client_start_time_naive = datetime.fromisoformat(client_timestamp_str)
+        # 強制標記為 UTC，使其成為 offset-aware，解決相減錯誤
+        client_start_time = client_start_time_naive.replace(tzinfo=timezone.utc)
         
         # 2. 計算 T2 必須結束的目標時間點 (T1 結束前 1 秒)
-        # T2_end_time = client_start_time + T1 - 1s
         t2_end_time = client_start_time + timedelta(seconds=client_timeout_s - 1)
         
-        # 3. 獲取當前 Server 的時間
+        # 3. 獲取當前 Server 的時間 (已是 offset-aware)
         current_server_time = datetime.now(timezone.utc)
         
         # 4. 計算 Server 應阻塞的剩餘秒數 (T2)
-        # T2 = T2_end_time - current_server_time
         time_to_wait = (t2_end_time - current_server_time).total_seconds()
         
         # 規則: T2 必須 >= 0 
         return max(0, int(time_to_wait))
         
     except Exception as e:
+        # 當 timestamp 格式不正確時
         print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2=599s.")
         # 如果解析失敗，則使用預設 T1-1 的安全值
         return max(0, client_timeout_s - 1)
@@ -252,17 +248,16 @@ def long_poll_endpoint():
     except Exception:
         pass
     
-    # 1. 計算 T2 (精確計算)
+    # 1. 計算 T2
     max_wait_time_server = calculate_server_timeout(client_timeout, client_timestamp)
     
     # 2. 記錄收到請求
     print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update (T1={client_timeout}s, Ts={client_timestamp}). T2 set to {max_wait_time_server}s.")
 
-    # 3. 準備新的 Event (與之前版本相同)
+    # 3. 準備新的 Event
     new_client_event = threading.Event()
     with data_lock:
         if current_waiting_event:
-            # 強制喚醒前一個請求
             current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
             current_waiting_event.set()
         
@@ -274,7 +269,7 @@ def long_poll_endpoint():
     # 4. 阻塞 (Blocking) - 等待 T2
     is_triggered = new_client_event.wait(timeout=max_wait_time_server)
     
-    # 5. 取得回覆資料並清理狀態 (與之前版本相同)
+    # 5. 取得回覆資料並清理狀態
     with data_lock:
         response_payload = current_response_data
         if new_client_event == current_waiting_event:
@@ -286,12 +281,11 @@ def long_poll_endpoint():
         return jsonify(response_payload), 200
     
     if is_triggered:
-        # Fallback (不太可能發生)
         with data_lock:
             data_to_send = LATEST_EVENT_DATA.copy()
         return jsonify({"status": "success", "data": data_to_send}), 200
     else:
-        # T2 Timeout 達到，Server 主動斷線
+        # T2 Timeout 達到
         print(f"[{time.strftime('%H:%M:%S')}] Timeout reached. Sending 'No Update' response.")
         return jsonify({"status": "timeout", "message": "No new events."}), 200
 
@@ -323,7 +317,6 @@ if __name__ == "__main__":
     options = arg_parser.parse_args()
 
     app.run(debug=options.debug, port=options.port, threaded=True)
-    # app.run(host='0.0.0.0', port=5000, threaded=True)
 
-# RENDER START COMMAND (T3 = 300s): gunicorn --worker-class gevent --timeout 300 --bind 0.0.0.0:$PORT app:app 
+# RENDER START COMMAND (T3 = 610s): gunicorn --worker-class gevent --timeout 610 --bind 0.0.0.0:$PORT app:app 
 # RENDER ENV VAR: TZ = Asia/Taipei
