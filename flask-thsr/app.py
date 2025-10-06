@@ -1,5 +1,5 @@
 # =======================================================
-# app.py (Flask Web Server) - 最終任務持久化同步版本
+# app.py (Flask Web Server) - 已更新表格數據格式
 # =======================================================
 
 import gevent.monkey
@@ -11,23 +11,19 @@ import json
 import time
 import threading
 from datetime import datetime, timezone, timedelta 
-from typing import Dict, Any
+from typing import Dict, Any, List
 from zoneinfo import ZoneInfo
 from argparse import ArgumentParser
 
-# 修正 Render 環境下的重定向問題
 from werkzeug.middleware.proxy_fix import ProxyFix 
 from flask import Flask, request, abort, render_template, jsonify, render_template_string
 
-# --- LINE Bot (保持原有結構，與核心功能獨立) ---
-# (省略 LINE Bot 相關設定和路由)
-# -----------------------------------------------
+# ... (省略 LINE Bot 相關設定) ...
 
 app = Flask(__name__)
-# 啟用 ProxyFix 修正 Render/Gunicorn 環境下的 URL 重定向問題
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1) 
 
-# --- 核心配置與全局狀態 ---
+# --- 核心配置與全局狀態 (保持不變) ---
 MAX_NETWORK_LATENCY = 5
 BASE_CLIENT_TIMEOUT = 600 + MAX_NETWORK_LATENCY
 CST_TIMEZONE = ZoneInfo('Asia/Taipei') 
@@ -36,7 +32,6 @@ data_lock = threading.Lock()
 current_waiting_event: threading.Event | None = None 
 current_response_data: Dict[str, Any] | None = None 
 
-# 任務佇列文件
 TICKET_DIR = "./"
 TICKET_REQUEST_FILE = os.path.join(TICKET_DIR, "ticket_requests.json")
 TICKET_HISTORY_FILE = os.path.join(TICKET_DIR, "ticket_history.json")
@@ -67,6 +62,7 @@ def get_new_id():
         max_id = max(max_id, max(h.get("id", 0) for h in history))
     return max_id + 1
 
+# --- 時間同步函式 (保持不變) ---
 def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
     try:
         client_start_time_naive = datetime.fromisoformat(client_timestamp_str)
@@ -85,11 +81,50 @@ def push_task_to_client(task_data: Dict[str, Any]):
     with data_lock:
         notifications_sent = 0
         if current_waiting_event:
-            # 被喚醒的客戶端將收到單一新任務
             current_response_data = {"status": "success", "data": task_data.copy()}
             current_waiting_event.set() 
             notifications_sent = 1
     print(f"[{time.strftime('%H:%M:%S')}] ✅ PUSHED: New booking task (ID: {task_data.get('id')}). Waking up {notifications_sent} client.")
+
+# --- 新增：數據格式化函式 ---
+def format_ticket_data(ticket: Dict[str, Any]) -> Dict[str, Any]:
+    """將單筆訂票數據格式化為前端表格所需的精簡格式"""
+    
+    # 訂票日期 (Order Date): 格式 'hh:mm'
+    try:
+        # 假設 order_date 格式為 "YYYY-MM-DD HH:MM:SS"
+        order_dt = datetime.strptime(ticket.get("order_date"), "%Y-%m-%d %H:%M:%S")
+        formatted_order_date = order_dt.strftime("%H:%M")
+    except Exception:
+        formatted_order_date = "N/A"
+        
+    # 乘車日期 (Travel Date): 格式 'MM/DD'
+    try:
+        # 假設 travel_date 格式為 "YYYY-MM-DD"
+        travel_dt = datetime.strptime(ticket.get("travel_date"), "%Y-%m-%d")
+        formatted_travel_date = travel_dt.strftime("%m/%d")
+    except Exception:
+        formatted_travel_date = "N/A"
+
+    # 組合時間地點資訊
+    from_info = f"{ticket.get('from_station', 'N/A')} {ticket.get('from_time', 'N/A')}"
+    to_info = f"{ticket.get('to_station', 'N/A')} {ticket.get('to_time', 'N/A')}"
+    
+    # 創建新的精簡字典
+    formatted_ticket = {
+        "id": ticket["id"],
+        "status": ticket.get("status"), 
+        "result": ticket.get("status", "N/A"),
+        "code": ticket.get("code", "N/A"), 
+        "name": ticket.get("name", "N/A"),
+        "id_number": ticket.get("id_number", "N/A"), # 雖然表格不顯示，但保留原始數據
+        "train_no": ticket.get("train_no", "N/A"),
+        "formatted_order_date": formatted_order_date,
+        "formatted_travel_date": formatted_travel_date,
+        "from_info": from_info,
+        "to_info": to_info,
+    }
+    return formatted_ticket
 
 
 # ===================================================
@@ -100,11 +135,14 @@ def push_task_to_client(task_data: Dict[str, Any]):
 @app.route("/", methods=["GET"])
 def index():
     requests = load_json(TICKET_REQUEST_FILE)
-    return render_template("index.html", requests=requests)
+    # 雖然 index.html 的表格內容由 AJAX 獲取，但這裡仍需傳遞數據以供初始渲染
+    formatted_requests = [format_ticket_data(r) for r in requests]
+    return render_template("index.html", requests=formatted_requests)
 
-# 2. JSON API 訂票提交路由
+# 2. JSON API 訂票提交路由 (保持不變)
 @app.route("/api/submit_ticket", methods=["POST"])
 def api_submit_ticket():
+    # ... (程式碼保持不變) ...
     try:
         data = request.get_json()
         
@@ -131,12 +169,10 @@ def api_submit_ticket():
             "code": None
         }
         
-        # 1. 記錄到持久化佇列
         requests = load_json(TICKET_REQUEST_FILE)
         requests.append(ticket)
         save_json(TICKET_REQUEST_FILE, requests)
         
-        # 2. 自動推送通知（如果 client 正在等候）
         push_task_to_client(ticket)
         
         print(f"[{time.strftime('%H:%M:%S')}] 📝 JSON SUBMIT: New task ID {ticket['id']} created.")
@@ -151,46 +187,51 @@ def api_submit_ticket():
         return jsonify({"status": "internal_error", "message": str(e)}), 500
 
 
-# 3. 歷史記錄頁面 (保持不變)
+# 3. 歷史記錄頁面 (已修改：應用格式化)
 @app.route("/history.html")
 def history():
-    history = load_json(TICKET_HISTORY_FILE)
-    return render_template("history.html", history=history)
+    history_data = load_json(TICKET_HISTORY_FILE)
+    
+    # 應用格式化函式，將格式化後的數據傳遞給 history.html
+    formatted_history = [format_ticket_data(h) for h in history_data]
+    
+    return render_template("history.html", history=formatted_history)
 
-# 4. AJAX 短輪詢路由 (保持不變)
+# 4. AJAX 短輪詢路由 (已修改：使用格式化數據和新模板)
 @app.route("/api/pending_table", methods=["GET"])
 def api_pending_table():
     requests = load_json(TICKET_REQUEST_FILE)
     
+    # 應用格式化函式
+    formatted_requests = [format_ticket_data(r) for r in requests]
+    
+    # 新的模板字串，配合 index.html 的新表頭
     template_str = """
-    {% for r in requests %}
+    {% for r in formatted_requests %}
     <tr>
         <td>{{ r.id }}</td>
         <td>{{ r.status }}</td>
-        <td>{{ r.order_date }}</td>
+        <td>{{ r.formatted_order_date }}</td>
         <td>{{ r.name }}</td>
-        <td>{{ r.id_number }}</td>
         <td>{{ r.train_no }}</td>
-        <td>{{ r.travel_date }}</td>
-        <td>{{ r.from_station }}</td>
-        <td>{{ r.from_time }}</td>
-        <td>{{ r.to_station }}</td>
-        <td>{{ r.to_time }}</td>
-        <td>{{ r.code if r.code else "" }}</td>
+        <td>{{ r.formatted_travel_date }}</td>
+        <td>{{ r.from_info }}</td>
+        <td>{{ r.to_info }}</td>
     </tr>
     {% else %}
     <tr>
-        <td colspan="12">目前沒有待處理的訂票任務。</td>
+        <td colspan="8">目前沒有待處理的訂票任務。</td>
     </tr>
     {% endfor %}
     """
     
-    rendered_html = render_template_string(template_str, requests=requests)
+    rendered_html = render_template_string(template_str, formatted_requests=formatted_requests)
     return rendered_html, 200
 
-# 5. Long Polling 端點 (**已實現持久化同步**)
+# 5. Long Polling 端點 (保持不變)
 @app.route('/poll_for_update', methods=['POST'])
 def long_poll_endpoint():
+    # ... (程式碼保持不變) ...
     global current_waiting_event, current_response_data
     client_timeout = BASE_CLIENT_TIMEOUT
     client_timestamp = ""
@@ -204,33 +245,25 @@ def long_poll_endpoint():
     max_wait_time_server = calculate_server_timeout(client_timeout, client_timestamp)
     print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update. T2 set to {max_wait_time_server}s.")
 
-    # --- 關鍵修改點：檢查待處理任務佇列 (同步邏輯) ---
-    # 確保在進入阻塞狀態前，先檢查是否有 Client 錯過的任務
     requests = load_json(TICKET_REQUEST_FILE)
     if requests:
-        # 如果佇列中有任務，立即回傳所有待處理任務
         print(f"[{time.strftime('%H:%M:%S')}] 🚨 WAITING TASKS FOUND: Returning {len(requests)} pending tasks immediately.")
-        # 回傳所有任務，客戶端必須自行判斷哪些任務是它還沒處理過的。
         return jsonify({
             "status": "initial_sync",
             "message": "Found pending tasks in queue.",
-            "data": requests.copy() # 將整個任務列表回傳
+            "data": requests.copy() 
         }), 200
-    # --- 關鍵修改點結束 ---
 
-    # 如果佇列為空，進入正常 Long Polling 阻塞流程
     new_client_event = threading.Event()
     response_payload = None
     with data_lock:
         if current_waiting_event:
-            # 如果有其他客戶端正在等候，強制它重新輪詢
             current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
             current_waiting_event.set()
         
         current_waiting_event = new_client_event
         current_response_data = None
     
-    # 阻塞等待新任務或超時
     is_triggered = new_client_event.wait(timeout=max_wait_time_server)
     
     with data_lock:

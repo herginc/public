@@ -1,136 +1,145 @@
-# ===============================================
-# long_polling_client.py (Private PC Client)
-# ===============================================
-
+# =======================================================
+# long_polling_client.py - Long Polling 客戶端 (最終版本)
+# =======================================================
 import requests
-import time
-import sys
 import json
+import time
 from datetime import datetime
-from typing import Dict, Any
+from typing import List, Dict, Any
 
-# --- Configuration ---
-# 請將 SERVER_URL 替換為您 Render 部署的實際網址
-SERVER_URL = "https://flask-thsr.onrender.com" 
-POLL_URL = f"{SERVER_URL}/poll_for_update"
-UPDATE_URL = f"{SERVER_URL}/update_status"
+# 🚀 導入獨立的模擬函式
+from thsr_booking import simulate_booking
 
-POLLING_INTERVAL = 600
-MAX_NETWORK_LATENCY = 5
-CLIENT_TIMEOUT = POLLING_INTERVAL + MAX_NETWORK_LATENCY # T1
-RETRY_DELAY = 60 
-SHORT_UPDATE_TIMEOUT = 10 # 回傳結果時的短超時
+# 伺服器網址
+SERVER_URL = 'https://flask-thsr.onrender.com' 
 
-# --- 訂票模擬函式 (你需要自行實現 thsr_booking_system.py) ---
+# 客戶端設定
+CLIENT_TIMEOUT_S = 605 
+MAX_RETRIES = 5 
+RETRY_DELAY_SECONDS = 60 # ⚠️ 已更新：重試延遲時間改為 60 秒
 
-def run_thsr_booking_system(booking_data: Dict[str, Any]) -> Dict[str, Any]:
+# --- 輔助函式 ---
+
+def update_server_status(task_id: int, status: str, code: str = None) -> bool:
     """
-    模擬呼叫 thsr_booking_system.py 進行訂票。
-    實際程式碼應在此處替換為對真實或模擬訂票系統的調用。
+    將訂票結果回傳給伺服器，以便從待處理佇列中移除任務。
     """
-    task_id = booking_data.get('id', 'N/A')
-    print(f"[{time.strftime('%H:%M:%S')}] ⚙️ STARTING thsr_booking_system for Task ID: {task_id}...")
+    url = f'{SERVER_URL}/update_status'
+    details = {"code": code} if code else {}
     
-    # 模擬耗時操作
-    time.sleep(3) 
-
-    # 模擬訂票結果 (例如：成功)
-    if booking_data.get("train_no") == "999":
-        # 模擬訂票失敗
-        return {"result": "failed", "error_message": "Train 999 is full or cancelled.", "code": None}
-    else:
-        # 模擬訂票成功
-        return {"result": "booked", "ticket_info": "E-Ticket info...", "code": f"T{task_id}{int(time.time()) % 1000}"}
-
-# --- 結果回傳函式 ---
-
-def update_server_status(task_id: str, result_data: Dict[str, Any]):
-    """將訂票結果回傳給 Render 上的 app.py 伺服器。"""
-    
-    status = result_data.get("result", "unknown")
-    payload = {
+    update_payload = {
         "task_id": task_id,
-        "status": status, 
-        "details": result_data 
+        "status": status,
+        "details": details
     }
     
     try:
-        response = requests.post(UPDATE_URL, json=payload, timeout=SHORT_UPDATE_TIMEOUT)
-        if response.status_code == 200:
-            print(f"[{time.strftime('%H:%M:%S')}] ✅ Status updated for Task ID {task_id} to '{status}'.")
+        response = requests.post(url, json=update_payload, timeout=5) 
+        response.raise_for_status() 
+        
+        result = response.json()
+        if result.get("status") == "success":
+            return True
         else:
-            print(f"[{time.strftime('%H:%M:%S')}] ❌ FAILED to update status for Task ID {task_id}. Server response: {response.status_code} {response.text}")
+            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ SERVER ERROR: Update failed for Task {task_id}. Message: {result.get('message')}")
+            return False
+            
     except requests.exceptions.RequestException as e:
-        print(f"[{time.strftime('%H:%M:%S')}] ❌ FAILED to update status for Task ID {task_id} (Connection Error): {e}")
+        print(f"[{time.strftime('%H:%M:%S')}] 🚨 NETWORK ERROR: Failed to update status for Task {task_id}. {e}")
+        return False
 
 
-# --- Long Polling Loop ---
+def process_and_report_tasks(tasks_list: List[Dict[str, Any]]):
+    """
+    遍歷任務列表，處理每一筆任務並回傳結果。
+    """
+    for task in tasks_list:
+        task_id = task.get("id")
+        
+        # 1. 執行模擬訂票 (從 thsr_booking 模組導入)
+        new_status, booking_code = simulate_booking(task)
+        
+        # 2. 回傳狀態給伺服器
+        if not update_server_status(task_id, new_status, booking_code):
+            print(f"[{time.strftime('%H:%M:%S')}] 🚨 CRITICAL: Task {task_id} result not confirmed by server. It remains in the queue.")
 
-def run_long_polling():
+
+# --- 核心 Long Polling 邏輯 ---
+
+def start_polling():
+    poll_url = f'{SERVER_URL}/poll_for_update'
+    retry_count = 0
     
-    print(f"[{time.strftime('%H:%M:%S')}] Starting client. Polling interval: {POLLING_INTERVAL}s. T1 Timeout: {CLIENT_TIMEOUT}s.")
-    
-    while True:
-        
-        request_start_time = datetime.now()
-        
-        print(f"[{time.strftime('%H:%M:%S')}] Client initiating request (POST). Request timeout: {CLIENT_TIMEOUT}s.")
-        
-        post_data: Dict[str, Any] = {
-            "query_type" : "thsr_booking",
-            "client_timeout_s": CLIENT_TIMEOUT,
-            "timestamp": request_start_time.isoformat() 
-        }
-        
-        # --- Long Poll Request ---
+    print(f"[{time.strftime('%H:%M:%S')}] 🚀 Client starting Long Polling loop for server: {SERVER_URL}")
+
+    while retry_count < MAX_RETRIES:
         try:
-            response = requests.post(POLL_URL, json=post_data, timeout=CLIENT_TIMEOUT) 
-            
-            if response.status_code == 200:
-                data = response.json()
-                status = data.get("status")
+            # 1. 準備請求 payload
+            payload = {
+                "client_timeout_s": CLIENT_TIMEOUT_S,
+                "timestamp": datetime.now().isoformat() 
+            }
 
-                if status == "success":
-                    # 🚀 RECEIVED INSTANT NOTIFICATION (New Task)
-                    booking_data = data.get('data', {})
-                    task_id = booking_data.get('id')
-                    
-                    print("="*50)
-                    print(f"[{time.strftime('%H:%M:%S')}] **🚀 RECEIVED TASK ID {task_id}!** Data: {booking_data}")
-                    
-                    # 1. 執行訂票系統
-                    booking_result = run_thsr_booking_system(booking_data)
-                    
-                    # 2. 回傳結果給 Server
-                    update_server_status(task_id, booking_result)
-                    
-                    print("="*50)
-                    # 立即進入下一輪 Long Poll
-                
-                elif status in ["timeout", "forced_reconnect"]:
-                    # T2 Timeout (正常結束) 或 Server 要求重連
-                    print(f"[{time.strftime('%H:%M:%S')}] Connection ended ({status}). Initiating next poll immediately.")
-                    
-                else: 
-                    print(f"[{time.strftime('%H:%M:%S')}] Server returned unexpected status status: {status}. Initiating next poll immediately.")
+            print(f"[{time.strftime('%H:%M:%S')}] Client initiating request (POST). Request timeout: {CLIENT_TIMEOUT_S}s.")
             
+            # 2. 發起 Long Polling 請求
+            response = requests.post(
+                poll_url, 
+                json=payload, 
+                timeout=CLIENT_TIMEOUT_S + 5 
+            )
+            response.raise_for_status() 
+            
+            # 3. 解析響應
+            data = response.json()
+            status = data.get('status')
+            
+            # ⚠️ 依要求：立即印出回傳的 status
+            if status:
+                print(f"[{time.strftime('%H:%M:%S')}] ➡️ SERVER STATUS: {status}")
+            
+            # --- 處理不同狀態 ---
+            
+            if status == "initial_sync":
+                pending_tasks = data.get('data', [])
+                if pending_tasks:
+                    print(f"[{time.strftime('%H:%M:%S')}] 🔄 SYNC: Received {len(pending_tasks)} pending tasks for initial processing.")
+                    process_and_report_tasks(pending_tasks)
+                
+                retry_count = 0 
+                
+            elif status == "success":
+                new_task = data.get('data')
+                if new_task:
+                    print(f"[{time.strftime('%H:%M:%S')}] ⭐ PUSH: Received new task via push.")
+                    process_and_report_tasks([new_task])
+                    
+                retry_count = 0
+                
+            elif status == "timeout" or status == "forced_reconnect":
+                retry_count = 0
+                pass 
+                
             else:
-                # Other server errors (404, 500, etc.)
-                print(f"[{time.strftime('%H:%M:%S')}] Server returned unexpected status code: {response.status_code}. Initiating next poll immediately.")
-        
-        # --- Exception Handling ---
+                print(f"[{time.strftime('%H:%M:%S')}] ❓ UNKNOWN STATUS: {status}. Server response: {data}")
+                retry_count += 1
+                time.sleep(RETRY_DELAY_SECONDS)
+                
         except requests.exceptions.Timeout:
-            # T1 Timeout (605s) 發生，表示 T3/Gunicorn 超時可能先發生了
-            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ UNEXPECTED TIMEOUT: Client request timed out ({CLIENT_TIMEOUT}s reached). Initiating next poll immediately.")
+            # 正常 Long Polling 超時
+            retry_count = 0
+            print(f"[{time.strftime('%H:%M:%S')}] 😴 TIMEOUT: Long polling request timed out. Reconnecting immediately.")
+            pass
             
         except requests.exceptions.RequestException as e:
-            # 連線失敗、DNS 錯誤等硬性網路問題
-            print(f"[{time.strftime('%H:%M:%M')}] ⛔ CONNECTION ERROR: {e}. Retrying in {RETRY_DELAY} seconds...")
-            time.sleep(RETRY_DELAY)
-            
-        except Exception as e:
-            # 其他所有未知錯誤
-            print(f"[{time.strftime('%H:%M:%S')}] ❌ UNKNOWN ERROR: {e}. Initiating next poll immediately.")
+            # 網路或其他致命錯誤
+            print(f"[{time.strftime('%H:%M:%S')}] ❌ FATAL ERROR: Connection failed: {e}")
+            retry_count += 1
+            print(f"[{time.strftime('%H:%M:%S')}] Waiting {RETRY_DELAY_SECONDS}s before retrying. ({retry_count}/{MAX_RETRIES})")
+            time.sleep(RETRY_DELAY_SECONDS)
 
-if __name__ == '__main__':
-    run_long_polling()
+    print(f"[{time.strftime('%H:%M:%S')}] 🛑 Max retries reached. Shutting down client.")
+
+
+if __name__ == "__main__":
+    start_polling()

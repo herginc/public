@@ -5,7 +5,7 @@
     <title>高鐵訂票系統</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        /* (CSS 樣式保持不變，省略) */
+        /* (CSS 樣式保持不變) */
         body { font-family: "Noto Sans TC", Arial, sans-serif; background: #f7f7fa; margin: 0; padding: 0; }
         header { background: #1565c0; color: #fff; padding: 1.5rem 0; text-align: center; letter-spacing: 0.1em; font-size: 2rem; margin-bottom: 2rem; box-shadow: 0 2px 8px #ccc; }
         .container { max-width: 900px; margin: 0 auto; background: #fff; border-radius: 10px; box-shadow: 0 2px 12px #ddd; padding: 2rem 2.5rem 2.5rem 2.5rem; }
@@ -47,16 +47,12 @@
                 <tr>
                     <th>id</th>
                     <th>訂票狀況</th>
-                    <th>訂票日期</th>
+                    <th>訂票日期 (hh:mm)</th>
                     <th>姓名</th>
-                    <th>身分證字號</th>
                     <th>車次</th>
-                    <th>乘車日期</th>
-                    <th>出發地點</th>
-                    <th>出發時間</th>
-                    <th>到達地點</th>
-                    <th>到達時間</th>
-                    <th>訂位代號</th>
+                    <th>乘車日期 (MM/DD)</th>
+                    <th>出發時間地點</th>
+                    <th>到達時間地點</th>
                 </tr>
             </thead>
             <tbody id="pending-tasks-body">
@@ -64,20 +60,16 @@
                 <tr>
                     <td>{{ r.id }}</td>
                     <td>{{ r.status }}</td>
-                    <td>{{ r.order_date }}</td>
+                    <td>{{ r.formatted_order_date }}</td>
                     <td>{{ r.name }}</td>
-                    <td>{{ r.id_number }}</td>
                     <td>{{ r.train_no }}</td>
-                    <td>{{ r.travel_date }}</td>
-                    <td>{{ r.from_station }}</td>
-                    <td>{{ r.from_time }}</td>
-                    <td>{{ r.to_station }}</td>
-                    <td>{{ r.to_time }}</td>
-                    <td>{{ r.code if r.code else "" }}</td>
+                    <td>{{ r.formatted_travel_date }}</td>
+                    <td>{{ r.from_info }}</td>
+                    <td>{{ r.to_info }}</td>
                 </tr>
                 {% else %}
                 <tr>
-                    <td colspan="12">目前沒有待處理的訂票任務。</td>
+                    <td colspan="8">目前沒有待處理的訂票任務。</td>
                 </tr>
                 {% endfor %}
             </tbody>
@@ -87,7 +79,7 @@
     </div>
     
     <script>
-        // --- 狀態 AJAX 短輪詢腳本 ---
+        // --- 狀態 AJAX 短輪詢腳本 (保持不變) ---
         const POLLING_INTERVAL_MS = 10000; 
         const tableBody = document.querySelector('#pending-tasks-body'); 
     
@@ -109,39 +101,35 @@
                 });
         }
     
-        // 立即執行一次，然後每隔 10 秒執行一次
         fetchAndUpdateStatus();
         setInterval(fetchAndUpdateStatus, POLLING_INTERVAL_MS);
 
 
-        // --- JSON 提交處理腳本 ---
+        // --- JSON 提交處理腳本 (保持不變) ---
         const form = document.getElementById('booking-form');
-        const API_SUBMIT_URL = '/api/submit_ticket'; // 新增的 API 端點
+        const API_SUBMIT_URL = '/api/submit_ticket'; 
 
         form.addEventListener('submit', function(event) {
-            event.preventDefault(); // 阻止瀏覽器預設的表單提交
+            event.preventDefault(); 
 
-            // 1. 收集表單數據並轉換為 JSON 物件
             const formData = new FormData(form);
             const data = {};
             formData.forEach((value, key) => {
                 data[key] = value;
             });
 
-            // 2. 發送 JSON 請求
             fetch(API_SUBMIT_URL, {
                 method: 'POST',
                 headers: {
-                    'Content-Type': 'application/json', // 關鍵：設定為 JSON 格式
+                    'Content-Type': 'application/json', 
                 },
-                body: JSON.stringify(data) // 傳遞 JSON 字串
+                body: JSON.stringify(data) 
             })
             .then(response => response.json())
             .then(result => {
                 if (result.status === 'success') {
                     alert(`訂票任務已成功提交！任務 ID: ${result.task_id}`);
                     form.reset(); 
-                    // 立即更新表格
                     fetchAndUpdateStatus(); 
                 } else {
                     alert('提交失敗: ' + result.message);
