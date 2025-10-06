@@ -1,140 +1,125 @@
-#
-# Flask THSR Parser (app.py)
-#
+# ===============================================
+# app.py (Flask Web Server)
+# ===============================================
 
-# ===============================================
-# 必須放在所有其他 import 之前，解決 MonkeyPatchWarning
 import gevent.monkey
-gevent.monkey.patch_all()
-# ===============================================
+gevent.monkey.patch_all() # 確保 gevent/gunicorn 能處理多個長連線
 
 import os
 import sys
+import json
+import time
+import threading
+from datetime import datetime, timezone, timedelta 
+from typing import Dict, Any
+from zoneinfo import ZoneInfo
 from argparse import ArgumentParser
 
 from flask import Flask, request, abort, render_template, jsonify, redirect, url_for
-import json
-from datetime import datetime
 
-import time
-import threading
-
-from linebot.v3 import (
-     WebhookHandler
-)
-
-from linebot.v3.exceptions import (
-    InvalidSignatureError
-)
-
-from linebot.v3.webhooks import (
-    MessageEvent,
-    TextMessageContent,
-)
-
-from linebot.v3.messaging import (
-    Configuration,
-    ApiClient,
-    MessagingApi,
-    ReplyMessageRequest,
-    TextMessage
-)
+# --- LINE Bot (保持原有結構，與核心功能獨立) ---
+from linebot.v3 import WebhookHandler
+from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.webhooks import MessageEvent, TextMessageContent
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
+# (省略 LINE Bot 相關設定和路由，因為它們不影響核心訂票流程)
+# -----------------------------------------------
 
 app = Flask(__name__)
 
-# get channel_secret and channel_access_token from your environment variable
-channel_secret = os.getenv('LINE_CHANNEL_SECRET', None)
-channel_access_token = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', None)
+# --- 核心配置與全局狀態 ---
+MAX_NETWORK_LATENCY = 5
+BASE_CLIENT_TIMEOUT = 600 + MAX_NETWORK_LATENCY
+CST_TIMEZONE = ZoneInfo('Asia/Taipei') 
+GUNICORN_TIMEOUT = 610 # 建議在 Render 設置此值
 
-if channel_secret is None:
-    print('Specify LINE_CHANNEL_SECRET as environment variable.')
-    sys.exit(1)
+data_lock = threading.Lock() 
 
-if channel_access_token is None:
-    print('Specify LINE_CHANNEL_ACCESS_TOKEN as environment variable.')
-    sys.exit(1)
+# Long Polling 狀態
+current_waiting_event: threading.Event | None = None # 當前等待中的 Client Event
+current_response_data: Dict[str, Any] | None = None # 準備回傳給 Long Polling Client 的數據
 
-
-handler = WebhookHandler(channel_secret)
-configuration = Configuration(access_token=channel_access_token)
-
-
-@app.errorhandler(404)
-def page_not_found(error):
-    print(f"[{error}] page not found or undefined route")
-    return 'page not found', 404
-
-
-@app.route("/echo", methods=['POST'])
-def cb_echo():
-    # get request body as text
-    body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
-    print(f"--> POST data = {body}")
-    # sys.stdout.flush()
-    return f'[echo]: {body}', 200
-
-
-@app.route("/callback", methods=['POST'])
-def line_webhook():
-    print("receive a LINE bot webhook message")
-
-    # get X-Line-Signature header value
-    signature = request.headers['X-Line-Signature']
-
-    # get request body as text
-    body = request.get_data(as_text=True)
-    app.logger.info("Request body: " + body)
-    print(f"Request body: {body}")
-    # sys.stdout.flush()
-
-    # handle webhook body
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-
-    return 'OK', 200
-
-
-@handler.add(MessageEvent, message=TextMessageContent)
-def message_text(event):
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message_with_http_info(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=event.message.text)]
-            )
-        )
-
-
+# 任務佇列文件
 TICKET_DIR = "./"
 TICKET_REQUEST_FILE = os.path.join(TICKET_DIR, "ticket_requests.json")
 TICKET_HISTORY_FILE = os.path.join(TICKET_DIR, "ticket_history.json")
 
+# --- 數據庫操作函式 (基於 JSON 檔案) ---
+
 def load_json(filename):
     if not os.path.exists(filename):
         return []
-    with open(filename, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(filename, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        print(f"[{time.strftime('%H:%M:%S')}] WARNING: Failed to decode {filename}. Starting with empty list.")
+        return []
 
 def save_json(filename, data):
-    # Ensure the directory exists before saving
     os.makedirs(os.path.dirname(filename), exist_ok=True)
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def get_new_id():
     requests = load_json(TICKET_REQUEST_FILE)
-    if not requests:
-        return 1
-    return max(r["id"] for r in requests) + 1
+    history = load_json(TICKET_HISTORY_FILE)
+    
+    max_id = 0
+    if requests:
+        max_id = max(max_id, max(r.get("id", 0) for r in requests))
+    if history:
+        max_id = max(max_id, max(h.get("id", 0) for h in history))
+        
+    return max_id + 1
 
+# --- 時間同步函式 ---
+
+def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
+    """根據 Client 時間戳，計算 T2 (Server 應阻塞的秒數)。"""
+    try:
+        client_start_time_naive = datetime.fromisoformat(client_timestamp_str)
+        client_start_time_cst = client_start_time_naive.replace(tzinfo=CST_TIMEZONE)
+        client_start_time_utc = client_start_time_cst.astimezone(timezone.utc)
+        
+        # T2 應在 T1 結束前 MAX_NETWORK_LATENCY 秒結束
+        t2_end_time = client_start_time_utc + timedelta(seconds=client_timeout_s - MAX_NETWORK_LATENCY)
+        
+        current_server_time = datetime.now(timezone.utc)
+        
+        time_to_wait = (t2_end_time - current_server_time).total_seconds()
+        
+        return max(0, int(time_to_wait))
+        
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2={max(0, client_timeout_s - MAX_NETWORK_LATENCY)}s.")
+        return max(0, client_timeout_s - MAX_NETWORK_LATENCY)
+
+# --- 任務推送函式 (Long Polling 喚醒) ---
+
+def push_task_to_client(task_data: Dict[str, Any]):
+    """將最新的 '待處理' 任務推送給 Long Polling Client。"""
+    global current_waiting_event, current_response_data
+    
+    with data_lock:
+        notifications_sent = 0
+        if current_waiting_event:
+            # 準備回覆 Client 的 payload，告知有任務
+            current_response_data = {"status": "success", "data": task_data.copy()}
+            current_waiting_event.set() # 喚醒等待中的 Client
+            notifications_sent = 1
+            
+    print(f"[{time.strftime('%H:%M:%S')}] ✅ PUSHED: New booking task (ID: {task_data.get('id')}). Waking up {notifications_sent} client.")
+
+
+# ===================================================
+# --- 路由定義 ---
+# ===================================================
+
+# 1. 訂票首頁/提交訂票 (Web Form 入口)
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
-        # Receive new ticket request
         data = request.form
         ticket = {
             "id": get_new_id(),
@@ -148,170 +133,141 @@ def index():
             "from_time": data.get("from_time"),
             "to_station": data.get("to_station"),
             "to_time": data.get("to_time"),
+            # 確保初始沒有訂位代號
+            "code": None
         }
+        
+        # 1. 記錄到待處理佇列
         requests = load_json(TICKET_REQUEST_FILE)
         requests.append(ticket)
         save_json(TICKET_REQUEST_FILE, requests)
+        
+        # 2. **自動推送任務** 給 Long Polling Client
+        push_task_to_client(ticket)
+        
         return redirect(url_for("index"))
-    # Show current ticket requests
+        
+    # GET 請求: 顯示當前待處理任務
     requests = load_json(TICKET_REQUEST_FILE)
     return render_template("index.html", requests=requests)
 
+# 2. 歷史記錄頁面
 @app.route("/history.html")
 def history():
     history = load_json(TICKET_HISTORY_FILE)
     return render_template("history.html", history=history)
 
-@app.route("/api/ticket_requests", methods=["GET"])
-def api_ticket_requests():
-    # For external system polling
-    requests = load_json(TICKET_REQUEST_FILE)
-    pending = [r for r in requests if r["status"] == "待處理"]
-    return jsonify(pending)
-
-
-# app.py - Web Server Code (Running on Render/Gunicorn)
-
-from flask import Flask, request, jsonify
-import threading
-import time
-from datetime import datetime, timezone, timedelta 
-from typing import Dict, Any
-from zoneinfo import ZoneInfo
-
-# app = Flask(__name__)
-
-# --- Critical Configuration & Global State ---
-
-MAX_NETWORK_LATENCY = 5  # could be overwrite by command line parameter
-GUNICORN_TIMEOUT = 610
-BASE_CLIENT_TIMEOUT = 600 + MAX_NETWORK_LATENCY
-
-data_lock = threading.Lock() 
-
-# 定義 Client 所在的時區 (使用 zoneinfo)
-CST_TIMEZONE = ZoneInfo('Asia/Taipei') 
-
-LATEST_EVENT_DATA: Dict[str, Any] = {"message": "Server initialized. No event yet."}
-current_waiting_event: threading.Event | None = None 
-current_response_data: Dict[str, Any] | None = None 
-
-# --- 精確計算 T2 邏輯 (已修復) ---
-
-def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
-    """
-    根據 Client 傳入的時間，計算 T2 (Server 應阻塞的秒數)。
-    """
-    
-    try:
-        # 1. 解析 Client 請求時間 (作為無時區的 datetime)
-        client_start_time_naive = datetime.fromisoformat(client_timestamp_str)
-        
-        # 2. **關鍵修正：** 標記 Client 時間為 CST，然後轉換為 UTC
-        #    a. 告訴 Python 這個時間是 CST/Asia/Taipei
-        client_start_time_cst = client_start_time_naive.replace(tzinfo=CST_TIMEZONE)
-        #    b. 將 CST 轉換為 UTC
-        client_start_time_utc = client_start_time_cst.astimezone(timezone.utc)
-        
-        # 3. 計算 T2 必須結束的目標時間點 (T1 結束前 MAX_NETWORK_LATENCY 秒)
-        t2_end_time = client_start_time_utc + timedelta(seconds=client_timeout_s - MAX_NETWORK_LATENCY)
-        
-        # 4. 獲取當前 Server 的時間 (已是 offset-aware UTC)
-        current_server_time = datetime.now(timezone.utc)
-        
-        # 5. 計算 Server 應阻塞的剩餘秒數 (T2)
-        # 兩個 offset-aware UTC 時間相減，結果會是正確的
-        time_to_wait = (t2_end_time - current_server_time).total_seconds()
-        
-        # 規則: T2 必須 >= 0 
-        return max(0, int(time_to_wait))
-        
-    except Exception as e:
-        # 這裡會捕獲格式錯誤等
-        print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2={max(0, client_timeout_s - MAX_NETWORK_LATENCY)}s.")
-        return max(0, client_timeout_s - MAX_NETWORK_LATENCY)
-
-# --- Long Polling Endpoint (使用 HTTP POST) ---
-
+# 3. Long Polling 端點 (Server)
 @app.route('/poll_for_update', methods=['POST'])
 def long_poll_endpoint():
-    """
-    接收 Client POST 請求，計算 T2 並阻塞。
-    """
     global current_waiting_event, current_response_data
     
     client_timeout = BASE_CLIENT_TIMEOUT
     client_timestamp = ""
     
-    # 嘗試從 POST 數據中獲取 Client 資訊
+    # 解析 Client 傳入的 Long Polling 參數
     try:
         data = request.get_json()
         client_timeout = data.get('client_timeout_s', BASE_CLIENT_TIMEOUT)
         client_timestamp = data.get('timestamp', "")
-        
-        if not isinstance(client_timeout, int) or client_timeout < MAX_NETWORK_LATENCY:
-             client_timeout = BASE_CLIENT_TIMEOUT
     except Exception:
         pass
     
     # 1. 計算 T2
     max_wait_time_server = calculate_server_timeout(client_timeout, client_timestamp)
-    
-    # 2. 記錄收到請求
-    print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update (T1={client_timeout}s, Ts={client_timestamp}). T2 set to {max_wait_time_server}s.")
+    print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update. T2 set to {max_wait_time_server}s.")
 
-    # 3. 準備新的 Event
+    # 2. 處理連線競爭，並設置新的 Event
     new_client_event = threading.Event()
+    response_payload = None
     with data_lock:
         if current_waiting_event:
+            # 強制喚醒舊的 Client，要求它立即重連
             current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
             current_waiting_event.set()
         
+        # 設置當前等待的 Client
         current_waiting_event = new_client_event
         current_response_data = None
     
-    print(f"[{time.strftime('%H:%M:%S')}] New poll entered WAITING state (Max {max_wait_time_server}s).")
-
-    # 4. 阻塞 (Blocking) - 等待 T2
+    # 3. 阻塞 (Blocking) - 等待 T2
     is_triggered = new_client_event.wait(timeout=max_wait_time_server)
     
-    # 5. 取得回覆資料並清理狀態
+    # 4. 取得回覆資料並清理狀態
     with data_lock:
         response_payload = current_response_data
+        # 只有當前 Event 結束時才清空全局變數，防止被強制重連的舊 Event 覆蓋
         if new_client_event == current_waiting_event:
             current_waiting_event = None
             current_response_data = None
-
-    # 6. 檢查結果並回覆
+            
+    # 5. 回覆結果
     if response_payload:
         return jsonify(response_payload), 200
     
-    if is_triggered:
-        with data_lock:
-            data_to_send = LATEST_EVENT_DATA.copy()
-        return jsonify({"status": "success", "data": data_to_send}), 200
-    else:
-        # T2 Timeout 達到
+    # T2 Timeout 達到
+    if not is_triggered:
         print(f"[{time.strftime('%H:%M:%S')}] Timeout reached. Sending 'No Update' response.")
         return jsonify({"status": "timeout", "message": "No new events."}), 200
-
-# --- Event Trigger Endpoint (保持不變) ---
-@app.route('/trigger_event', methods=['POST'])
-def trigger_event():
-    data = request.get_json()
-    
-    with data_lock:
-        global LATEST_EVENT_DATA, current_waiting_event, current_response_data
         
-        LATEST_EVENT_DATA = data
-        notifications_sent = 0
-        if current_waiting_event:
-            current_response_data = {"status": "success", "data": LATEST_EVENT_DATA.copy()}
-            current_waiting_event.set() 
-            notifications_sent = 1
+    # 如果是 is_triggered，但 response_payload 為空，則表示是被 forced_reconnect 喚醒，
+    # 應該在 data_lock 區塊內收到 response_payload，這裡應為安全檢查。
+    return jsonify({"status": "internal_error", "message": "Unknown trigger state."}), 500
+
+
+# 4. 任務結果回傳端點 (Server 接收 Client 執行結果)
+@app.route('/update_status', methods=['POST'])
+def update_status():
+    """接收 long_polling_client.py 回傳的訂票結果或狀態更新。"""
+    
+    try:
+        data = request.get_json()
+        task_id = data.get('task_id')
+        status = data.get('status') # 例如: "booked", "failed", "in_progress"
+        details = data.get('details', {})
+        
+        if not task_id or not status:
+            return jsonify({"status": "error", "message": "Missing task_id or status"}), 400
+        
+        task_id = int(task_id) # 確保 ID 類型一致
+
+        with data_lock: # 鎖定，確保 JSON 讀寫安全
+            requests = load_json(TICKET_REQUEST_FILE)
             
-    print(f"[{time.strftime('%H:%M:%S')}] ✅ TRIGGERED: External event received. Waking up {notifications_sent} client.")
-    return jsonify({"status": "event_received", "notifications_sent": notifications_sent}), 200
+            found = False
+            for ticket in requests:
+                if ticket.get("id") == task_id:
+                    # 1. 更新任務狀態
+                    ticket["status"] = status
+                    ticket["result_details"] = details
+                    ticket["completion_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    # 將 Client 回傳的訂位代號 (如果有) 更新到主紀錄
+                    if details.get("code"):
+                        ticket["code"] = details["code"]
+                    
+                    # 2. 如果完成或失敗，將任務移到 History
+                    if status in ["booked", "failed"]:
+                        requests.remove(ticket)
+                        history_data = load_json(TICKET_HISTORY_FILE)
+                        history_data.append(ticket)
+                        save_json(TICKET_HISTORY_FILE, history_data)
+                    
+                    found = True
+                    break
+            
+            # 3. 儲存更新後的任務佇列
+            save_json(TICKET_REQUEST_FILE, requests)
+        
+        if found:
+            print(f"[{time.strftime('%H:%M:%S')}] 💾 STATUS UPDATE: Task ID {task_id} updated to '{status}'.")
+            return jsonify({"status": "success", "message": f"Task {task_id} status updated to {status}."}), 200
+        else:
+            return jsonify({"status": "not_found", "message": f"Task {task_id} not found."}), 404
+            
+    except Exception as e:
+        print(f"[{time.strftime('%H:%M:%S')}] ❌ STATUS UPDATE UNKNOWN ERROR: {e}")
+        return jsonify({"status": "internal_error", "message": str(e)}), 500
 
 
 if __name__ == "__main__":
@@ -324,5 +280,5 @@ if __name__ == "__main__":
 
     app.run(debug=options.debug, port=options.port, threaded=True)
 
-# RENDER START COMMAND (T3 = 610s): gunicorn --worker-class gevent --timeout 610 --bind 0.0.0.0:$PORT app:app 
+# RENDER START COMMAND: gunicorn --worker-class gevent --timeout 610 --bind 0.0.0.0:$PORT app:app 
 # RENDER ENV VAR: TZ = Asia/Taipei
