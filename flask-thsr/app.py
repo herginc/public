@@ -1,9 +1,9 @@
 # ===============================================
-# app.py (Flask Web Server)
+# app.py (Flask Web Server) - 已修正 AJAX 更新
 # ===============================================
 
 import gevent.monkey
-gevent.monkey.patch_all() # 確保 gevent/gunicorn 能處理多個長連線
+gevent.monkey.patch_all()
 
 import os
 import sys
@@ -15,15 +15,23 @@ from typing import Dict, Any
 from zoneinfo import ZoneInfo
 from argparse import ArgumentParser
 
-from flask import Flask, request, abort, render_template, jsonify, redirect, url_for
+from flask import Flask, request, abort, render_template, jsonify, redirect, url_for, render_template_string # <-- 新增 render_template_string
 
-# --- LINE Bot (保持原有結構，與核心功能獨立) ---
+# --- LINE Bot (保持原有結構) ---
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.webhooks import MessageEvent, TextMessageContent
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
-# (省略 LINE Bot 相關設定和路由，因為它們不影響核心訂票流程)
-# -----------------------------------------------
+
+# 假設 LINE Bot 相關設定已存在
+channel_secret = os.getenv('LINE_CHANNEL_SECRET', None)
+channel_access_token = os.getenv('LINE_CHANNEL_ACCESS_TOKEN', None)
+
+if channel_secret is None or channel_access_token is None:
+    # 實際運行時需要這些變數
+    pass 
+# --- LINE Bot End ---
+
 
 app = Flask(__name__)
 
@@ -31,21 +39,16 @@ app = Flask(__name__)
 MAX_NETWORK_LATENCY = 5
 BASE_CLIENT_TIMEOUT = 600 + MAX_NETWORK_LATENCY
 CST_TIMEZONE = ZoneInfo('Asia/Taipei') 
-GUNICORN_TIMEOUT = 610 # 建議在 Render 設置此值
-
 data_lock = threading.Lock() 
-
-# Long Polling 狀態
-current_waiting_event: threading.Event | None = None # 當前等待中的 Client Event
-current_response_data: Dict[str, Any] | None = None # 準備回傳給 Long Polling Client 的數據
+current_waiting_event: threading.Event | None = None 
+current_response_data: Dict[str, Any] | None = None 
 
 # 任務佇列文件
 TICKET_DIR = "./"
 TICKET_REQUEST_FILE = os.path.join(TICKET_DIR, "ticket_requests.json")
 TICKET_HISTORY_FILE = os.path.join(TICKET_DIR, "ticket_history.json")
 
-# --- 數據庫操作函式 (基於 JSON 檔案) ---
-
+# --- 數據庫操作函式 (保持不變) ---
 def load_json(filename):
     if not os.path.exists(filename):
         return []
@@ -64,59 +67,44 @@ def save_json(filename, data):
 def get_new_id():
     requests = load_json(TICKET_REQUEST_FILE)
     history = load_json(TICKET_HISTORY_FILE)
-    
     max_id = 0
     if requests:
         max_id = max(max_id, max(r.get("id", 0) for r in requests))
     if history:
         max_id = max(max_id, max(h.get("id", 0) for h in history))
-        
     return max_id + 1
 
-# --- 時間同步函式 ---
-
+# --- 時間同步函式 (保持不變) ---
 def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
-    """根據 Client 時間戳，計算 T2 (Server 應阻塞的秒數)。"""
     try:
         client_start_time_naive = datetime.fromisoformat(client_timestamp_str)
         client_start_time_cst = client_start_time_naive.replace(tzinfo=CST_TIMEZONE)
         client_start_time_utc = client_start_time_cst.astimezone(timezone.utc)
-        
-        # T2 應在 T1 結束前 MAX_NETWORK_LATENCY 秒結束
         t2_end_time = client_start_time_utc + timedelta(seconds=client_timeout_s - MAX_NETWORK_LATENCY)
-        
         current_server_time = datetime.now(timezone.utc)
-        
         time_to_wait = (t2_end_time - current_server_time).total_seconds()
-        
         return max(0, int(time_to_wait))
-        
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2={max(0, client_timeout_s - MAX_NETWORK_LATENCY)}s.")
         return max(0, client_timeout_s - MAX_NETWORK_LATENCY)
 
-# --- 任務推送函式 (Long Polling 喚醒) ---
-
+# --- 任務推送函式 (保持不變) ---
 def push_task_to_client(task_data: Dict[str, Any]):
-    """將最新的 '待處理' 任務推送給 Long Polling Client。"""
     global current_waiting_event, current_response_data
-    
     with data_lock:
         notifications_sent = 0
         if current_waiting_event:
-            # 準備回覆 Client 的 payload，告知有任務
             current_response_data = {"status": "success", "data": task_data.copy()}
-            current_waiting_event.set() # 喚醒等待中的 Client
+            current_waiting_event.set() 
             notifications_sent = 1
-            
     print(f"[{time.strftime('%H:%M:%S')}] ✅ PUSHED: New booking task (ID: {task_data.get('id')}). Waking up {notifications_sent} client.")
 
 
 # ===================================================
-# --- 路由定義 ---
+# --- 路由定義 (已修改 index 和新增 AJAX 路由) ---
 # ===================================================
 
-# 1. 訂票首頁/提交訂票 (Web Form 入口)
+# 1. 訂票首頁/提交訂票
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "POST":
@@ -133,39 +121,67 @@ def index():
             "from_time": data.get("from_time"),
             "to_station": data.get("to_station"),
             "to_time": data.get("to_time"),
-            # 確保初始沒有訂位代號
             "code": None
         }
         
-        # 1. 記錄到待處理佇列
         requests = load_json(TICKET_REQUEST_FILE)
         requests.append(ticket)
         save_json(TICKET_REQUEST_FILE, requests)
         
-        # 2. **自動推送任務** 給 Long Polling Client
         push_task_to_client(ticket)
         
-        return redirect(url_for("index"))
+        return redirect(url_for("index")) # 提交成功後重定向回 GET 頁面
         
-    # GET 請求: 顯示當前待處理任務
+    # GET 請求: 顯示當前待處理任務 (初始渲染)
     requests = load_json(TICKET_REQUEST_FILE)
     return render_template("index.html", requests=requests)
 
-# 2. 歷史記錄頁面
+# 2. 歷史記錄頁面 (保持不變)
 @app.route("/history.html")
 def history():
     history = load_json(TICKET_HISTORY_FILE)
     return render_template("history.html", history=history)
 
-# 3. Long Polling 端點 (Server)
+# 3. **新增** AJAX 短輪詢路由
+@app.route("/api/pending_table", methods=["GET"])
+def api_pending_table():
+    """回傳當前待處理任務的 HTML 表格內容 (<tbody> 內的<tr>s)"""
+    requests = load_json(TICKET_REQUEST_FILE)
+    
+    # 定義只渲染表格行 (<tr>) 的 Jinja 模板片段
+    template_str = """
+    {% for r in requests %}
+    <tr>
+        <td>{{ r.id }}</td>
+        <td>{{ r.status }}</td>
+        <td>{{ r.order_date }}</td>
+        <td>{{ r.name }}</td>
+        <td>{{ r.id_number }}</td>
+        <td>{{ r.train_no }}</td>
+        <td>{{ r.travel_date }}</td>
+        <td>{{ r.from_station }}</td>
+        <td>{{ r.from_time }}</td>
+        <td>{{ r.to_station }}</td>
+        <td>{{ r.to_time }}</td>
+        <td>{{ r.code if r.code else "" }}</td>
+    </tr>
+    {% else %}
+    <tr>
+        <td colspan="12">目前沒有待處理的訂票任務。</td>
+    </tr>
+    {% endfor %}
+    """
+    
+    rendered_html = render_template_string(template_str, requests=requests)
+    
+    return rendered_html, 200
+
+# 4. Long Polling 端點 (保持不變)
 @app.route('/poll_for_update', methods=['POST'])
 def long_poll_endpoint():
     global current_waiting_event, current_response_data
-    
     client_timeout = BASE_CLIENT_TIMEOUT
     client_timestamp = ""
-    
-    # 解析 Client 傳入的 Long Polling 參數
     try:
         data = request.get_json()
         client_timeout = data.get('client_timeout_s', BASE_CLIENT_TIMEOUT)
@@ -173,80 +189,63 @@ def long_poll_endpoint():
     except Exception:
         pass
     
-    # 1. 計算 T2
     max_wait_time_server = calculate_server_timeout(client_timeout, client_timestamp)
     print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update. T2 set to {max_wait_time_server}s.")
 
-    # 2. 處理連線競爭，並設置新的 Event
     new_client_event = threading.Event()
     response_payload = None
     with data_lock:
         if current_waiting_event:
-            # 強制喚醒舊的 Client，要求它立即重連
             current_response_data = {"status": "forced_reconnect", "message": "New poll initiated. Please re-poll immediately."}
             current_waiting_event.set()
         
-        # 設置當前等待的 Client
         current_waiting_event = new_client_event
         current_response_data = None
     
-    # 3. 阻塞 (Blocking) - 等待 T2
     is_triggered = new_client_event.wait(timeout=max_wait_time_server)
     
-    # 4. 取得回覆資料並清理狀態
     with data_lock:
         response_payload = current_response_data
-        # 只有當前 Event 結束時才清空全局變數，防止被強制重連的舊 Event 覆蓋
         if new_client_event == current_waiting_event:
             current_waiting_event = None
             current_response_data = None
             
-    # 5. 回覆結果
     if response_payload:
         return jsonify(response_payload), 200
     
-    # T2 Timeout 達到
     if not is_triggered:
         print(f"[{time.strftime('%H:%M:%S')}] Timeout reached. Sending 'No Update' response.")
         return jsonify({"status": "timeout", "message": "No new events."}), 200
         
-    # 如果是 is_triggered，但 response_payload 為空，則表示是被 forced_reconnect 喚醒，
-    # 應該在 data_lock 區塊內收到 response_payload，這裡應為安全檢查。
     return jsonify({"status": "internal_error", "message": "Unknown trigger state."}), 500
 
 
-# 4. 任務結果回傳端點 (Server 接收 Client 執行結果)
+# 5. 任務結果回傳端點 (保持不變)
 @app.route('/update_status', methods=['POST'])
 def update_status():
-    """接收 long_polling_client.py 回傳的訂票結果或狀態更新。"""
-    
     try:
         data = request.get_json()
         task_id = data.get('task_id')
-        status = data.get('status') # 例如: "booked", "failed", "in_progress"
+        status = data.get('status') 
         details = data.get('details', {})
         
         if not task_id or not status:
             return jsonify({"status": "error", "message": "Missing task_id or status"}), 400
         
-        task_id = int(task_id) # 確保 ID 類型一致
+        task_id = int(task_id)
 
-        with data_lock: # 鎖定，確保 JSON 讀寫安全
+        with data_lock:
             requests = load_json(TICKET_REQUEST_FILE)
-            
             found = False
             for ticket in requests:
                 if ticket.get("id") == task_id:
-                    # 1. 更新任務狀態
                     ticket["status"] = status
                     ticket["result_details"] = details
                     ticket["completion_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     
-                    # 將 Client 回傳的訂位代號 (如果有) 更新到主紀錄
                     if details.get("code"):
                         ticket["code"] = details["code"]
                     
-                    # 2. 如果完成或失敗，將任務移到 History
                     if status in ["booked", "failed"]:
                         requests.remove(ticket)
                         history_data = load_json(TICKET_HISTORY_FILE)
@@ -256,7 +255,6 @@ def update_status():
                     found = True
                     break
             
-            # 3. 儲存更新後的任務佇列
             save_json(TICKET_REQUEST_FILE, requests)
         
         if found:
@@ -279,6 +277,3 @@ if __name__ == "__main__":
     options = arg_parser.parse_args()
 
     app.run(debug=options.debug, port=options.port, threaded=True)
-
-# RENDER START COMMAND: gunicorn --worker-class gevent --timeout 610 --bind 0.0.0.0:$PORT app:app 
-# RENDER ENV VAR: TZ = Asia/Taipei

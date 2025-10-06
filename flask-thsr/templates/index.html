@@ -5,7 +5,6 @@
     <title>高鐵訂票系統</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
-        /* (CSS 樣式與您提供的保持一致，此處省略) */
         body { font-family: "Noto Sans TC", Arial, sans-serif; background: #f7f7fa; margin: 0; padding: 0; }
         header { background: #1565c0; color: #fff; padding: 1.5rem 0; text-align: center; letter-spacing: 0.1em; font-size: 2rem; margin-bottom: 2rem; box-shadow: 0 2px 8px #ccc; }
         .container { max-width: 900px; margin: 0 auto; background: #fff; border-radius: 10px; box-shadow: 0 2px 12px #ddd; padding: 2rem 2.5rem 2.5rem 2.5rem; }
@@ -40,50 +39,81 @@
             <label>到達時間<input name="to_time" type="time" required></label>
             <button type="submit">送出訂票</button>
         </form>
-        <h3>目前訂票資訊 (每 10 秒自動更新)</h3>
+        <h3>目前訂票資訊 (狀態自動更新中...)</h3>
         <div style="overflow-x:auto;">
         <table>
-            <tr>
-                <th>id</th>
-                <th>訂票狀況</th>
-                <th>訂票日期</th>
-                <th>姓名</th>
-                <th>身分證字號</th>
-                <th>車次</th>
-                <th>乘車日期</th>
-                <th>出發地點</th>
-                <th>出發時間</th>
-                <th>到達地點</th>
-                <th>到達時間</th>
-                <th>訂位代號</th>
-            </tr>
-            {% for r in requests %}
-            <tr>
-                <td>{{ r.id }}</td>
-                <td>{{ r.status }}</td>
-                <td>{{ r.order_date }}</td>
-                <td>{{ r.name }}</td>
-                <td>{{ r.id_number }}</td>
-                <td>{{ r.train_no }}</td>
-                <td>{{ r.travel_date }}</td>
-                <td>{{ r.from_station }}</td>
-                <td>{{ r.from_time }}</td>
-                <td>{{ r.to_station }}</td>
-                <td>{{ r.to_time }}</td>
-                <td>{{ r.code if r.code else "" }}</td>
-            </tr>
-            {% endfor %}
+            <thead>
+                <tr>
+                    <th>id</th>
+                    <th>訂票狀況</th>
+                    <th>訂票日期</th>
+                    <th>姓名</th>
+                    <th>身分證字號</th>
+                    <th>車次</th>
+                    <th>乘車日期</th>
+                    <th>出發地點</th>
+                    <th>出發時間</th>
+                    <th>到達地點</th>
+                    <th>到達時間</th>
+                    <th>訂位代號</th>
+                </tr>
+            </thead>
+            <tbody id="pending-tasks-body">
+                {% for r in requests %}
+                <tr>
+                    <td>{{ r.id }}</td>
+                    <td>{{ r.status }}</td>
+                    <td>{{ r.order_date }}</td>
+                    <td>{{ r.name }}</td>
+                    <td>{{ r.id_number }}</td>
+                    <td>{{ r.train_no }}</td>
+                    <td>{{ r.travel_date }}</td>
+                    <td>{{ r.from_station }}</td>
+                    <td>{{ r.from_time }}</td>
+                    <td>{{ r.to_station }}</td>
+                    <td>{{ r.to_time }}</td>
+                    <td>{{ r.code if r.code else "" }}</td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="12">目前沒有待處理的訂票任務。</td>
+                </tr>
+                {% endfor %}
+            </tbody>
         </table>
         </div>
         <a class="link-history" href="/history.html">歷史訂票資訊</a>
     </div>
     
     <script>
-        // --- 狀態短輪詢：每 10 秒刷新頁面以更新訂票狀態 ---
-        console.log("Starting Short Polling: Page refresh every 10 seconds for status update.");
-        setInterval(() => {
-            window.location.reload();
-        }, 10000); 
+        // --- 解決 UX 問題的 AJAX 短輪詢腳本 ---
+        const POLLING_INTERVAL_MS = 10000; // 每 10 秒更新一次
+        const tableBody = document.querySelector('#pending-tasks-body'); // 定位表格 tbody
+    
+        function fetchAndUpdateStatus() {
+            // 請求 app.py 的新 API，獲取新的表格行 HTML 片段
+            fetch('/api/pending_table')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return response.text(); // 接收 HTML 文字
+                })
+                .then(html => {
+                    // 使用接收到的 HTML 替換 tbody 的內容
+                    if (tableBody) {
+                        tableBody.innerHTML = html;
+                        // console.log(`[${new Date().toLocaleTimeString()}] Table updated successfully.`);
+                    }
+                })
+                .catch(error => {
+                    console.error(`[${new Date().toLocaleTimeString()}] Error fetching status:`, error);
+                });
+        }
+    
+        // 立即執行一次，然後每隔 10 秒執行一次
+        fetchAndUpdateStatus();
+        setInterval(fetchAndUpdateStatus, POLLING_INTERVAL_MS);
     </script>
 </body>
 </html>
