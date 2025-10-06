@@ -22,17 +22,21 @@ def run_long_polling():
     
     while True:
         
+        # 1. 記錄請求開始時間 (用於 POST 數據)
+        request_start_time = datetime.now()
+        
         print(f"[{time.strftime('%H:%M:%S')}] Client initiating request (POST). Max patience: {CLIENT_TIMEOUT}s.")
         
-        # 1. 準備 POST 數據，包含 T1 資訊
+        # 2. 準備 POST 數據
         post_data: Dict[str, Any] = {
             "client_timeout_s": CLIENT_TIMEOUT,
-            "timestamp": datetime.now().isoformat()
+            # 傳送 ISO 格式的 timestamp 給 Server 進行 T2 計算
+            "timestamp": request_start_time.isoformat() 
         }
         
         # --- Long Poll Request ---
         try:
-            # 2. 發送 HTTP POST 請求，使用 T1 = 600 秒超時
+            # 3. 發送 HTTP POST 請求，使用 T1 = 600 秒超時
             response = requests.post(SERVER_URL, json=post_data, timeout=CLIENT_TIMEOUT) 
             
             # --- Status Code Handling ---
@@ -54,7 +58,7 @@ def run_long_polling():
                     print(f"Data: {data.get('data')}")
                     print("="*50)
                 
-                else:  # Handles "timeout" (T=T2) and "forced_reconnect"
+                else:  # Handles "timeout" and "forced_reconnect"
                     print(f"[{time.strftime('%H:%M:%S')}] Connection ended ({status}). Initiating next poll immediately.")
                 
             else:
@@ -63,13 +67,12 @@ def run_long_polling():
         
         # --- Exception Handling ---
         except requests.exceptions.Timeout:
-            # T1 Timeout (600s) - 在 T2(599s) 或 T3(601s) 之前發生，不應發生在正常情況下
+            # T1 Timeout (600s) 發生，表示 T3 (Gunicorn) 超時可能先發生了
             print(f"[{time.strftime('%H:%M:%S')}] ⚠️ UNEXPECTED TIMEOUT: Client request timed out ({CLIENT_TIMEOUT}s reached). Initiating next poll immediately.")
             
         except requests.exceptions.RequestException as e:
             # 連線失敗、DNS 錯誤等硬性網路問題
             print(f"[{time.strftime('%H:%M:%S')}] ⛔ CONNECTION ERROR: {e}. Retrying in {RETRY_DELAY} seconds...")
-            # 規則 3: 只有連線錯誤才等待 60 秒
             time.sleep(RETRY_DELAY)
             
         except Exception as e:
