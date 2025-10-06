@@ -1,5 +1,5 @@
 #
-# Flask THSR Parser
+# Flask THSR Parser (app.py)
 #
 
 # ===============================================
@@ -183,8 +183,9 @@ from zoneinfo import ZoneInfo
 
 # --- Critical Configuration & Global State ---
 
-GUNICORN_TIMEOUT = 601 
-BASE_CLIENT_TIMEOUT = 600 
+MAX_NETWORK_LATENCY = 5  # could be overwrite by command line parameter
+GUNICORN_TIMEOUT = 610
+BASE_CLIENT_TIMEOUT = 600 + MAX_NETWORK_LATENCY
 
 data_lock = threading.Lock() 
 
@@ -212,14 +213,14 @@ def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -
         #    b. 將 CST 轉換為 UTC
         client_start_time_utc = client_start_time_cst.astimezone(timezone.utc)
         
-        # 3. 計算 T2 必須結束的目標時間點 (T1 結束前 1 秒)
-        t2_end_time = client_start_time_utc + timedelta(seconds=client_timeout_s - 1)
+        # 3. 計算 T2 必須結束的目標時間點 (T1 結束前 MAX_NETWORK_LATENCY 秒)
+        t2_end_time = client_start_time_utc + timedelta(seconds=client_timeout_s - MAX_NETWORK_LATENCY)
         
         # 4. 獲取當前 Server 的時間 (已是 offset-aware UTC)
         current_server_time = datetime.now(timezone.utc)
         
         # 5. 計算 Server 應阻塞的剩餘秒數 (T2)
-        # 兩個 offset-aware UTC 時間相減，結果會是正確的 (約 599 秒)
+        # 兩個 offset-aware UTC 時間相減，結果會是正確的
         time_to_wait = (t2_end_time - current_server_time).total_seconds()
         
         # 規則: T2 必須 >= 0 
@@ -227,8 +228,8 @@ def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -
         
     except Exception as e:
         # 這裡會捕獲格式錯誤等
-        print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2=599s.")
-        return max(0, client_timeout_s - 1)
+        print(f"[{time.strftime('%H:%M:%S')}] ⚠️ TIME CALC ERROR: {e}. Falling back to default T2={max(0, client_timeout_s - MAX_NETWORK_LATENCY)}s.")
+        return max(0, client_timeout_s - MAX_NETWORK_LATENCY)
 
 # --- Long Polling Endpoint (使用 HTTP POST) ---
 
@@ -248,7 +249,7 @@ def long_poll_endpoint():
         client_timeout = data.get('client_timeout_s', BASE_CLIENT_TIMEOUT)
         client_timestamp = data.get('timestamp', "")
         
-        if not isinstance(client_timeout, int) or client_timeout < 1:
+        if not isinstance(client_timeout, int) or client_timeout < MAX_NETWORK_LATENCY:
              client_timeout = BASE_CLIENT_TIMEOUT
     except Exception:
         pass

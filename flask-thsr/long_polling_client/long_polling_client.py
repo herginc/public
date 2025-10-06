@@ -1,4 +1,4 @@
-# client.py - Python Client Code (T1=600s, POST, 無對齊)
+# long_polling_client.py - Python Client Code (T1=600s, POST, 無對齊)
 
 import requests
 import time
@@ -8,9 +8,13 @@ from typing import Dict, Any
 
 # --- Configuration ---
 
-SERVER_URL = "https://flask-thsr.onrender.com/poll_for_update" 
+SERVER_URL = "https://flask-thsr.onrender.com/poll_for_update"
+
+POLLING_INTERVAL = 600   # could be overwrite by command line parameter
+MAX_NETWORK_LATENCY = 5  # could be overwrite by command line parameter
+
 # T1: Client Base Timeout (600s)
-CLIENT_TIMEOUT = 600 
+CLIENT_TIMEOUT = POLLING_INTERVAL + MAX_NETWORK_LATENCY
 # RETRY_DELAY (60s) 僅用於 requests.exceptions.RequestException
 RETRY_DELAY = 60 
 
@@ -18,17 +22,18 @@ RETRY_DELAY = 60
 
 def run_long_polling():
     
-    print(f"[{time.strftime('%H:%M:%S')}] Starting client. Cycle: {CLIENT_TIMEOUT - 1}s max.")
+    print(f"[{time.strftime('%H:%M:%S')}] Starting client. Polling interval: {POLLING_INTERVAL}s.")
     
     while True:
         
         # 1. 記錄請求開始時間 (用於 POST 數據)
         request_start_time = datetime.now()
         
-        print(f"[{time.strftime('%H:%M:%S')}] Client initiating request (POST). Max patience: {CLIENT_TIMEOUT}s.")
+        print(f"[{time.strftime('%H:%M:%S')}] Client initiating request (POST). Request timeout: {CLIENT_TIMEOUT}s.")
         
         # 2. 準備 POST 數據
         post_data: Dict[str, Any] = {
+            "query_type" : "thsr_booking",
             "client_timeout_s": CLIENT_TIMEOUT,
             # 傳送 ISO 格式的 timestamp 給 Server 進行 T2 計算
             "timestamp": request_start_time.isoformat() 
