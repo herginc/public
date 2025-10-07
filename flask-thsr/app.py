@@ -261,7 +261,7 @@ def api_pending_table():
 # 5. Long Polling 端點 (保持不變)
 @app.route('/poll_for_update', methods=['POST'])
 def long_poll_endpoint():
-    # ... (程式碼保持不變) ...
+    # ...existing code...
     global current_waiting_event, current_response_data
     client_timeout = BASE_CLIENT_TIMEOUT
     client_timestamp = ""
@@ -271,9 +271,9 @@ def long_poll_endpoint():
         client_timestamp = data.get('timestamp', "")
     except Exception:
         pass
-    
+
     max_wait_time_server = calculate_server_timeout(client_timeout, client_timestamp)
-    print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update. T2 set to {max_wait_time_server}s.")
+    print(f"[{time.strftime('%H:%M:%S')}] 🔥 RECEIVED: /poll_for_update. T2={max_wait_time_server}s, Client timeout={client_timeout}, Client timestamp={client_timestamp}")
 
     requests = load_json(TICKET_REQUEST_FILE)
     if requests:

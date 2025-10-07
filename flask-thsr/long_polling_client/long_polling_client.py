@@ -15,7 +15,9 @@ from thsr_booking import simulate_booking
 SERVER_URL = 'https://flask-thsr.onrender.com' 
 
 # 客戶端設定
-CLIENT_TIMEOUT_S = 605 
+MAX_NETWORK_LATENCY = 5  # 預估最大網路延遲 (秒)
+POLLING_INTERVAL = 600
+CLIENT_TIMEOUT_S = POLLING_INTERVAL + MAX_NETWORK_LATENCY
 MAX_RETRIES = 5 
 RETRY_DELAY_SECONDS = 60 # ⚠️ 已更新：重試延遲時間改為 60 秒
 
@@ -87,7 +89,7 @@ def start_polling():
             response = requests.post(
                 poll_url, 
                 json=payload, 
-                timeout=CLIENT_TIMEOUT_S + 5 
+                timeout=CLIENT_TIMEOUT_S + 30  # 額外緩衝時間
             )
             response.raise_for_status() 
             
