@@ -6,6 +6,7 @@ import json
 import time
 from datetime import datetime
 from typing import List, Dict, Any
+from zoneinfo import ZoneInfo
 
 # 🚀 導入獨立的模擬函式
 from thsr_booking import simulate_booking
@@ -77,7 +78,7 @@ def start_polling():
             # 1. 準備請求 payload
             payload = {
                 "client_timeout_s": CLIENT_TIMEOUT_S,
-                "timestamp": datetime.now().isoformat() 
+                "timestamp": datetime.now(ZoneInfo("Asia/Taipei")).isoformat() 
             }
 
             print(f"[{time.strftime('%H:%M:%S')}] Client initiating request (POST). Request timeout: {CLIENT_TIMEOUT_S}s.")
