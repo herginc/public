@@ -36,6 +36,9 @@ TICKET_DIR = "./"
 TICKET_REQUEST_FILE = os.path.join(TICKET_DIR, "ticket_requests.json")
 TICKET_HISTORY_FILE = os.path.join(TICKET_DIR, "ticket_history.json")
 
+PASSENGER_DIR = "./json"
+PASSENGER_FILE = os.path.join(PASSENGER_DIR, "passenger_data.json")
+
 # --- 數據庫操作函式 (保持不變) ---
 def load_json(filename):
     if not os.path.exists(filename):
@@ -44,7 +47,6 @@ def load_json(filename):
         with open(filename, "r", encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError:
-        print(f"[{time.strftime('%H:%M:%S')}] WARNING: Failed to decode {filename}. Starting with empty list.")
         return []
 
 def save_json(filename, data):
@@ -61,6 +63,12 @@ def get_new_id():
     if history:
         max_id = max(max_id, max(h.get("id", 0) for h in history))
     return max_id + 1
+
+def get_new_passenger_id():
+    passengers = load_json(PASSENGER_FILE)
+    if not passengers:
+        return 1
+    return max(p["id"] for p in passengers) + 1
 
 # --- 時間同步函式 (保持不變) ---
 def calculate_server_timeout(client_timeout_s: int, client_timestamp_str: str) -> int:
@@ -132,8 +140,30 @@ def format_ticket_data(ticket: Dict[str, Any]) -> Dict[str, Any]:
 # ===================================================
 
 # 1. 訂票首頁 (GET)
-@app.route("/", methods=["GET"])
+@app.route("/", methods=["GET", "POST"])
 def index():
+    if request.method == "POST":
+        data = request.form
+        # ...原本的訂票資料處理...
+        ticket = {
+            "id": get_new_id(),
+            "status": "訂票待處理",
+            "order_date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "name": data.get("name"),
+            "id_number": data.get("id_number"),
+            "train_no": data.get("train_no"),
+            "travel_date": data.get("travel_date"),
+            "from_station": data.get("from_station"),
+            "from_time": data.get("from_time"),
+            "to_station": data.get("to_station"),
+            "to_time": data.get("to_time"),
+        }
+        requests = load_json(TICKET_REQUEST_FILE)
+        requests.append(ticket)
+        save_json(TICKET_REQUEST_FILE, requests)
+        # 新增：檢查是否需要新增乘客資料
+        add_passenger_if_new(ticket["name"], ticket["id_number"])
+        return redirect(url_for("index"))
     requests = load_json(TICKET_REQUEST_FILE)
     # 雖然 index.html 的表格內容由 AJAX 獲取，但這裡仍需傳遞數據以供初始渲染
     formatted_requests = [format_ticket_data(r) for r in requests]
@@ -329,6 +359,38 @@ def update_status():
         print(f"[{time.strftime('%H:%M:%S')}] ❌ STATUS UPDATE UNKNOWN ERROR: {e}")
         return jsonify({"status": "internal_error", "message": str(e)}), 500
 
+
+def add_passenger_if_new(name, id_number):
+    passengers = load_json(PASSENGER_FILE)
+    for p in passengers:
+        if p["name"] == name and p["id_number"] == id_number:
+            return  # Already exists
+    # Add new passenger with default identity
+    new_passenger = {
+        "id": get_new_passenger_id(),
+        "name": name,
+        "id_number": id_number,
+        "identity": "一般"
+    }
+    passengers.append(new_passenger)
+    save_json(PASSENGER_FILE, passengers)
+
+@app.route("/passenger.html", methods=["GET", "POST"])
+def passenger_page():
+    if request.method == "POST":
+        data = request.form
+        passenger = {
+            "id": get_new_passenger_id(),
+            "name": data.get("name"),
+            "id_number": data.get("id_number"),
+            "identity": data.get("identity")
+        }
+        passengers = load_json(PASSENGER_FILE)
+        passengers.append(passenger)
+        save_json(PASSENGER_FILE, passengers)
+        return render_template("passenger.html", passengers=passengers, success=True)
+    passengers = load_json(PASSENGER_FILE)
+    return render_template("passenger.html", passengers=passengers)
 
 if __name__ == "__main__":
     arg_parser = ArgumentParser(

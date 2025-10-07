@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <title>乘客個人資料</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body { font-family: "Noto Sans TC", Arial, sans-serif; background: #f7f7fa; margin: 0; padding: 0; }
+        header { background: #1565c0; color: #fff; padding: 1.2rem 0; text-align: center; font-size: 1.5rem; margin-bottom: 1.5rem; }
+        .container { max-width: 700px; margin: 0 auto; background: #fff; border-radius: 10px; box-shadow: 0 2px 12px #ddd; padding: 1.5rem; }
+        h2 { color: #1565c0; margin-top: 0; }
+        form { display: flex; flex-wrap: wrap; gap: 1rem 2rem; margin-bottom: 1.5rem; align-items: flex-end; }
+        form label { display: flex; flex-direction: column; font-weight: bold; color: #333; font-size: 1rem; flex: 1 1 180px; min-width: 120px; }
+        form input { padding: 0.5rem; border: 1px solid #bbb; border-radius: 5px; font-size: 1rem; margin-top: 0.3rem; }
+        form button { background: #1565c0; color: #fff; border: none; border-radius: 5px; padding: 0.7rem 2rem; font-size: 1.1rem; cursor: pointer; margin-top: 1.2rem; transition: background 0.2s; }
+        form button:hover { background: #003c8f; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; background: #fafbfc; font-size: 1rem; }
+        th, td { border: 1px solid #e0e0e0; padding: 0.7rem 0.5rem; text-align: center; word-break: break-all; }
+        th { background: #e3f2fd; color: #1565c0; font-weight: bold; }
+        tr:nth-child(even) { background: #f9f9f9; }
+        .success { color: green; font-weight: bold; margin-bottom: 1rem; }
+        @media (max-width: 600px) {
+            .container { padding: 0.5rem; }
+            header { font-size: 1.1rem; padding: 0.7rem 0; }
+            h2 { font-size: 1rem; }
+            form { flex-direction: column; gap: 0.5rem 0; }
+            form label { min-width: unset; font-size: 1rem; margin-bottom: 0.2rem; align-items: flex-start; }
+            form input { font-size: 1rem; margin-top: 0.2rem; width: 100%; box-sizing: border-box; }
+            form button { width: 100%; font-size: 1rem; margin-top: 0.7rem; padding: 0.6rem 0; }
+            table, th, td { font-size: 0.85rem; padding: 0.4rem 0.2rem; }
+        }
+    </style>
+</head>
+<body>
+    <header>乘客個人資料</header>
+    <div class="container">
+        <h2>新增乘客資料</h2>
+        {% if success %}
+            <div class="success">新增成功！</div>
+        {% endif %}
+        <form method="post">
+            <label>
+                姓名
+                <input name="name" required autocomplete="off">
+            </label>
+            <label>
+                身份證字號
+                <input name="id_number" required autocomplete="off">
+            </label>
+            <label>
+                身份
+                <input name="identity" required autocomplete="off">
+            </label>
+            <button type="submit">新增</button>
+        </form>
+        <h2>乘客資料列表</h2>
+        <table>
+            <tr>
+                <th>ID</th>
+                <th>姓名</th>
+                <th>身份證字號</th>
+                <th>身份</th>
+            </tr>
+            {% for p in passengers %}
+            <tr>
+                <td>{{ p.id }}</td>
+                <td>{{ p.name }}</td>
+                <td>{{ p.id_number }}</td>
+                <td>{{ p.identity }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        <a href="/">返回訂票系統</a>
+    </div>
+</body>
+</html>

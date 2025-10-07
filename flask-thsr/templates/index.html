@@ -21,6 +21,22 @@
         tr:nth-child(even) { background: #f9f9f9; }
         .link-history { display: inline-block; margin-top: 1rem; color: #1565c0; text-decoration: none; font-weight: bold; border: 1px solid #1565c0; border-radius: 5px; padding: 0.5rem 1.2rem; transition: background 0.2s, color 0.2s; }
         .link-history:hover { background: #1565c0; color: #fff; }
+        .link-passenger {
+            display: inline-block;
+            margin-top: 1rem;
+            color: #1565c0;
+            text-decoration: none;
+            font-weight: bold;
+            border: 1px solid #1565c0;
+            border-radius: 5px;
+            padding: 0.5rem 1.2rem;
+            transition: background 0.2s, color 0.2s;
+            margin-left: 1rem;
+        }
+        .link-passenger:hover {
+            background: #1565c0;
+            color: #fff;
+        }
         @media (max-width: 600px) { .container { padding: 0.5rem; } header { font-size: 1.3rem; padding: 1rem 0; } h2, h3 { font-size: 1.1rem; } form { display: block; margin-bottom: 1.2rem; gap: 0; padding: 0.5rem 0.2rem 0.5rem 0.2rem; background: #f3f7fc; border-radius: 8px; box-shadow: 0 1px 4px #e0e0e0; } form label { flex: unset; min-width: unset; font-size: 1rem; margin-bottom: 0.5rem; align-items: flex-start; font-weight: 500; } form input { font-size: 1rem; margin-top: 0.2rem; width: 100%; box-sizing: border-box; border-radius: 5px; } form button { width: 100%; font-size: 1.05rem; margin-top: 0.7rem; padding: 0.6rem 0; } }
         @media (max-width: 420px) { .container { padding: 0.2rem; } table, th, td { font-size: 0.75rem; } form label { font-size: 0.95rem; } }
     </style>
@@ -75,7 +91,8 @@
             </tbody>
         </table>
         </div>
-        <a class="link-history" href="/history.html">訂票紀錄</a>
+        <a class="link-history" href="/history.html">歷史訂票資訊</a>
+        <a class="link-passenger" href="/passenger.html">乘客個人資料</a>
     </div>
     
     <script>
