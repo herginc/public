@@ -172,7 +172,6 @@ def index():
 # 2. JSON API 訂票提交路由 (保持不變)
 @app.route("/api/submit_ticket", methods=["POST"])
 def api_submit_ticket():
-    # ... (程式碼保持不變) ...
     try:
         data = request.get_json()
         
@@ -202,7 +201,8 @@ def api_submit_ticket():
         requests = load_json(TICKET_REQUEST_FILE)
         requests.append(ticket)
         save_json(TICKET_REQUEST_FILE, requests)
-        
+        # 新增：自動新增乘客資料
+        add_passenger_if_new(ticket["name"], ticket["id_number"])
         push_task_to_client(ticket)
         
         print(f"[{time.strftime('%H:%M:%S')}] 📝 JSON SUBMIT: New task ID {ticket['id']} created.")
